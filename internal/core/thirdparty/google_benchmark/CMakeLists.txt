@@ -1,6 +1,6 @@
 FetchContent_Declare(google_benchmark
-    URL             https://github.com/google/benchmark/archive/v1.5.2.tar.gz
-    URL_MD5         084b34aceaeac11a6607d35220ca2efa
+    URL             https://github.com/google/benchmark/archive/v1.5.3.tar.gz
+    URL_MD5         abb43ef7784eaf0f7a98aed560920f46
     DOWNLOAD_DIR    ${THIRDPARTY_DOWNLOAD_PATH}
     SOURCE_DIR      ${CMAKE_CURRENT_BINARY_DIR}/google_benchmark
     BINARY_DIR      ${CMAKE_CURRENT_BINARY_DIR}/google_benchmark
