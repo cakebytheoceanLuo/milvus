@@ -43,7 +43,7 @@ auto metric_type_collections = [] {
 static void
 IndexBuilder_build(benchmark::State& state) {
     auto index_type = index_type_collections.at(state.range(0));
-    auto metric_type = metric_type_collections.at(state.range(0));
+    auto metric_type = metric_type_collections.at(state.range(1));
 
     indexcgo::TypeParams type_params;
     indexcgo::IndexParams index_params;
@@ -72,7 +72,7 @@ IndexBuilder_build(benchmark::State& state) {
 static void
 IndexBuilder_build_and_codec(benchmark::State& state) {
     auto index_type = index_type_collections.at(state.range(0));
-    auto metric_type = metric_type_collections.at(state.range(0));
+    auto metric_type = metric_type_collections.at(state.range(1));
 
     indexcgo::TypeParams type_params;
     indexcgo::IndexParams index_params;
