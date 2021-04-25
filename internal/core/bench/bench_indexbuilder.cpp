@@ -11,7 +11,7 @@
 
 #include <benchmark/benchmark.h>
 #include <tuple>
-#include <map>
+#include <unordered_map>
 #include <google/protobuf/text_format.h>
 
 #include "pb/index_cgo_msg.pb.h"
@@ -27,14 +27,14 @@ constexpr int64_t NB = 1000000;
 namespace indexcgo = milvus::proto::indexcgo;
 
 auto index_type_collections = [] {
-    static std::map<int, milvus::knowhere::IndexType> collections{
+    static std::unordered_map<uint64_t, milvus::knowhere::IndexType> collections{
         {0, milvus::knowhere::IndexEnum::INDEX_FAISS_IVFFLAT},
     };
     return collections;
 }();
 
 auto metric_type_collections = [] {
-    static std::map<int, milvus::knowhere::MetricType> collections{
+    static std::unordered_map<uint64_t, milvus::knowhere::MetricType> collections{
         {0, milvus::knowhere::Metric::L2},
     };
     return collections;
