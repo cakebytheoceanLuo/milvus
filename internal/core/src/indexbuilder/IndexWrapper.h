@@ -27,6 +27,12 @@ class IndexWrapper {
     dim();
 
     void
+    UpdateIndexSize();
+
+    int64_t
+    Size();
+
+    void
     BuildWithoutIds(const knowhere::DatasetPtr& dataset);
 
     struct Binary {

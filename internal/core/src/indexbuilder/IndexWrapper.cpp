@@ -154,6 +154,18 @@ IndexWrapper::dim() {
 }
 
 void
+IndexWrapper::UpdateIndexSize() {
+    assert(index_);
+    index_->UpdateIndexSize();
+}
+
+int64_t
+IndexWrapper::Size() {
+    assert(index_);
+    return index_->Size();
+}
+
+void
 IndexWrapper::BuildWithoutIds(const knowhere::DatasetPtr& dataset) {
     auto index_type = get_index_type();
     auto index_mode = get_index_mode();
