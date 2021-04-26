@@ -12,6 +12,7 @@
 include_directories(${CMAKE_HOME_DIRECTORY}/src)
 include_directories(${CMAKE_HOME_DIRECTORY}/unittest)
 include_directories(${CMAKE_HOME_DIRECTORY}/src/index/knowhere)
+include_directories(${CMAKE_HOME_DIRECTORY}/bench)
 
 set(bench_srcs 
     bench_naive.cpp
@@ -20,6 +21,26 @@ set(bench_srcs
 
 set(indexbuilder_bench_srcs
         bench_indexbuilder.cpp
+)
+
+set(bench_parameter_tuning_flat_srcs
+        bench_utils/parameter_tuning_utils.h
+        parameter-tuning/bench_flat.cpp
+)
+
+set(bench_parameter_tuning_ivfflat_srcs
+        bench_utils/parameter_tuning_utils.h
+        parameter-tuning/bench_ivfflat.cpp
+)
+
+set(bench_parameter_tuning_ivfsq8_srcs
+        bench_utils/parameter_tuning_utils.h
+        parameter-tuning/bench_ivfsq8.cpp
+)
+
+set(bench_parameter_tuning_ivfpq_srcs
+        bench_utils/parameter_tuning_utils.h
+        parameter-tuning/bench_ivfpq.cpp
 )
 
 add_executable(all_bench ${bench_srcs})
@@ -40,3 +61,43 @@ target_link_libraries(indexbuilder_bench
         )
 
 target_link_libraries(indexbuilder_bench benchmark::benchmark_main)
+
+add_executable(bench_parameter_tuning_flat ${bench_parameter_tuning_flat_srcs})
+target_link_libraries(bench_parameter_tuning_flat
+        milvus_segcore
+        milvus_indexbuilder
+        log
+        pthread
+        )
+
+target_link_libraries(bench_parameter_tuning_flat benchmark::benchmark_main)
+
+add_executable(bench_parameter_tuning_ivfflat ${bench_parameter_tuning_ivfflat_srcs})
+target_link_libraries(bench_parameter_tuning_ivfflat
+        milvus_segcore
+        milvus_indexbuilder
+        log
+        pthread
+        )
+
+target_link_libraries(bench_parameter_tuning_ivfflat benchmark::benchmark_main)
+
+add_executable(bench_parameter_tuning_ivfsq8 ${bench_parameter_tuning_ivfsq8_srcs})
+target_link_libraries(bench_parameter_tuning_ivfsq8
+        milvus_segcore
+        milvus_indexbuilder
+        log
+        pthread
+        )
+
+target_link_libraries(bench_parameter_tuning_ivfsq8 benchmark::benchmark_main)
+
+add_executable(bench_parameter_tuning_ivfpq ${bench_parameter_tuning_ivfpq_srcs})
+target_link_libraries(bench_parameter_tuning_ivfpq
+        milvus_segcore
+        milvus_indexbuilder
+        log
+        pthread
+        )
+
+target_link_libraries(bench_parameter_tuning_ivfpq benchmark::benchmark_main)
