@@ -91,4 +91,4 @@ CustomArguments(benchmark::internal::Benchmark* b) {
         }
     }
 }
-BENCHMARK(IndexBuilder_build)->Name("IVF_PQ/L2/VectorFloat")->Apply(CustomArguments);
+BENCHMARK(IndexBuilder_build)->Name("Build: IVF_PQ/L2/VectorFloat")->Apply(CustomArguments);

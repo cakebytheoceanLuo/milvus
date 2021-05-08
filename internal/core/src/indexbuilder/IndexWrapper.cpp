@@ -9,7 +9,7 @@
 // is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
-#include <map>
+#include <unordered_map>
 #include <exception>
 #include <google/protobuf/text_format.h>
 
@@ -321,7 +321,7 @@ IndexWrapper::get_metric_type() {
 
 knowhere::IndexMode
 IndexWrapper::get_index_mode() {
-    static std::map<std::string, knowhere::IndexMode> mode_map = {
+    static std::unordered_map<std::string, knowhere::IndexMode> mode_map = {
         {"CPU", knowhere::IndexMode::MODE_CPU},
         {"GPU", knowhere::IndexMode::MODE_GPU},
     };

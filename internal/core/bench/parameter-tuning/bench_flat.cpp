@@ -22,6 +22,7 @@
 #include "indexbuilder/utils.h"
 #include "test_utils/indexbuilder_test_utils.h"
 #include "bench_utils/parameter_tuning_utils.h"
+#include "bench_utils/sift.h"
 
 constexpr int64_t NB = 1000000;
 
@@ -36,7 +37,7 @@ auto metric_type_collections = [] {
 }();
 
 static void
-IndexBuilder_build(benchmark::State& state) {
+FLAT_build(benchmark::State& state) {
     auto index_type = milvus::knowhere::IndexEnum::INDEX_FAISS_IDMAP;
     //    auto metric_type = metric_type_collections.at(state.range(1));
     auto metric_type = milvus::knowhere::Metric::L2;
@@ -68,5 +69,110 @@ IndexBuilder_build(benchmark::State& state) {
     state.counters["Index Size"] = index->Size();
 }
 
+static void
+FLAT_search(benchmark::State& state) {
+    auto index_type = milvus::knowhere::IndexEnum::INDEX_FAISS_IDMAP;
+    auto metric_type = milvus::knowhere::Metric::L2;
+
+    auto index = milvus::knowhere::VecIndexFactory::GetInstance().CreateVecIndex(index_type);
+
+    double t0 = elapsed();
+    size_t d;
+
+    auto conf = milvus::knowhere::Config{
+            {milvus::knowhere::meta::DIM, 128},
+            {milvus::knowhere::meta::TOPK, 100},
+            {milvus::knowhere::Metric::TYPE, metric_type},
+            {milvus::knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+    };
+
+    size_t nt;
+    size_t nb;
+    size_t nq;
+    size_t k;                // nb of results per query in the GT
+    int64_t* gt; // nq * k matrix of ground-truth nearest-neighbors
+
+    train(t0, index_type, d, nt, index, conf);
+
+    add_points(t0, index_type, d, nb, index, conf);
+
+    auto xq_dataset = load_queries(t0, d, nq);
+
+    load_ground_truth(t0, nq, k, gt, conf);
+
+    auto result = milvus::knowhere::DatasetPtr(nullptr);
+
+    {
+        printf("[%.3f s] Perform a search on %ld queries\n",
+               elapsed() - t0,
+               nq);
+
+        for (auto _ : state) {
+            result = index->Query(xq_dataset, conf, nullptr);
+        }
+    }
+
+    auto recall = compute_recall(t0, nq, k, result, gt, k);
+    state.counters["Recall"] = recall;
+
+    auto recall_1 = compute_recall(t0, nq, k, result, gt, 1);
+    state.counters["Recall@1"] = recall_1;
+
+    if (k > 10) {
+        auto recall_10 = compute_recall(t0, nq, k, result, gt, 10);
+        state.counters["Recall@10"] = recall_10;
+    }
+
+    if (k > 100) {
+        auto recall_100 = compute_recall(t0, nq, k, result, gt, 100);
+        state.counters["Recall@100"] = recall_100;
+    }
+
+    ReleaseQuery(xq_dataset);
+    ReleaseQueryResult(result);
+}
+
 // FLAT, L2, VectorFloat
-BENCHMARK(IndexBuilder_build)->Name("FLAT/L2/VectorFloat");
+//BENCHMARK(FLAT_build)->Name("Build: FLAT/L2/VectorFloat");
+
+//BENCHMARK(FLAT_search)->Name("Search: FLAT/L2/VectorFloat")->Unit(benchmark::kMillisecond);
+
+class MyFixture : public benchmark::Fixture
+{
+public:
+    // add members as needed
+
+    MyFixture()
+    {
+        std::cout << "Ctor only called once per fixture testcase hat uses it" << std::endl;
+        // call whatever setup functions you need in the fixtures ctor
+    }
+
+    void SetUp(const ::benchmark::State& state) {
+        static bool callSetup = true;
+        static int old_zeroth = -1;
+        if (old_zeroth != state.range(0))
+        {
+            old_zeroth = state.range(0);
+            // Call your setup function
+            std::cout << "X" << state.range(0) << std::endl;
+        }
+        callSetup = false;
+        // call whatever setup functions you need in the fixtures ctor
+    }
+
+    void TearDown(const ::benchmark::State& state) {
+    }
+};
+
+BENCHMARK_DEFINE_F(MyFixture, TestcaseName)(benchmark::State& state)
+{
+    std::cout << "Benchmark function called more than once: " << state.range(0) << std::endl;
+    for (auto _ : state)
+    {
+        //run your benchmark
+        std::string ll;
+    }
+}
+
+BENCHMARK_REGISTER_F(MyFixture, TestcaseName)->Name("Search: FLAT/L2/VectorFloat")->Unit(benchmark::kMillisecond)->RangeMultiplier(2)->Range(1024, 65536);;

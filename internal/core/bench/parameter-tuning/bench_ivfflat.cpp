@@ -22,6 +22,7 @@
 #include "indexbuilder/utils.h"
 #include "test_utils/indexbuilder_test_utils.h"
 #include "bench_utils/parameter_tuning_utils.h"
+#include "bench_utils/sift.h"
 
 constexpr int64_t NB = 1000000;
 
@@ -36,7 +37,7 @@ auto metric_type_collections = [] {
 }();
 
 static void
-IndexBuilder_build(benchmark::State& state) {
+IVFFLAT_build(benchmark::State& state) {
     auto nlist = state.range(0);
     state.counters["nlist"] = nlist;
     auto index_type = milvus::knowhere::IndexEnum::INDEX_FAISS_IVFFLAT;
@@ -77,4 +78,76 @@ IndexBuilder_build(benchmark::State& state) {
 // BENCHMARK(IndexBuilder_build)->Name("IVF_FLAT/L2/VectorFloat")->DenseRange(1024, 65536, 1024);
 
 // nlist \in [1024, 2048, 4096, 8192, ..., 65536]
-BENCHMARK(IndexBuilder_build)->Name("IVF_FLAT/L2/VectorFloat")->RangeMultiplier(2)->Range(1024, 65536);
+//BENCHMARK(IVFFLAT_build)->Name("Build: IVF_FLAT/L2/VectorFloat")->RangeMultiplier(2)->Range(1024, 65536);
+
+static void
+IVFFLAT_search(benchmark::State& state) {
+    auto index_type = milvus::knowhere::IndexEnum::INDEX_FAISS_IVFFLAT;
+    auto metric_type = milvus::knowhere::Metric::L2;
+
+    auto index = milvus::knowhere::VecIndexFactory::GetInstance().CreateVecIndex(index_type);
+
+    double t0 = elapsed();
+
+    auto nlist = state.range(0);
+    state.counters["nlist"] = nlist;
+    auto nprobe = state.range(1);
+    state.counters["nprobe"] = nprobe;
+
+    auto conf = milvus::knowhere::Config{
+            {milvus::knowhere::meta::DIM, 128},
+            {milvus::knowhere::meta::TOPK, 100},
+            {milvus::knowhere::IndexParams::nlist, nlist},
+            {milvus::knowhere::IndexParams::nprobe, nprobe},
+            {milvus::knowhere::Metric::TYPE, metric_type},
+            {milvus::knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+//            {milvus::knowhere::meta::DEVICEID, DEVICEID},
+    };
+
+    size_t d;
+    size_t nt;
+    size_t nb;
+    size_t nq;
+    size_t k;                // nb of results per query in the GT
+    int64_t* gt; // nq * k matrix of ground-truth nearest-neighbors
+
+    train(t0, index_type, d, nt, index, conf);
+
+    add_points(t0, index_type, d, nb, index, conf);
+
+    auto xq_dataset = load_queries(t0, d, nq);
+
+    load_ground_truth(t0, nq, k, gt, conf);
+
+    auto result = milvus::knowhere::DatasetPtr(nullptr);
+
+    {
+        printf("[%.3f s] Perform a search on %ld queries\n",
+               elapsed() - t0,
+               nq);
+
+        for (auto _ : state) {
+            result = index->Query(xq_dataset, conf, nullptr);
+        }
+    }
+
+    auto recall = compute_recall(t0, nq, k, result, gt);
+    state.counters["Recall"] = recall;
+
+    ReleaseQuery(xq_dataset);
+    ReleaseQueryResult(result);
+}
+
+static void
+CustomArguments(benchmark::internal::Benchmark* b) {
+    for (int nlist = 1024; nlist <= 65536; nlist *= 2) {
+        for (int nprobe = 1; nprobe <= nlist; nprobe *= 2) {
+            b->Args({nlist, nprobe});
+        }
+    }
+}
+
+BENCHMARK(IVFFLAT_search)->Name("Search: IVFFLAT/L2/VectorFloat")->Apply(CustomArguments);
+
+//BENCHMARK(IVFFLAT_search)->Name("Search: IVFFLAT/L2/VectorFloat")->Args({100, 4});
+
