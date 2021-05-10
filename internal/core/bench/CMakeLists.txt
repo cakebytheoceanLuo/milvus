@@ -23,13 +23,6 @@ set(indexbuilder_bench_srcs
         bench_indexbuilder.cpp
 )
 
-set(bench_parameter_tuning_flat_srcs
-        bench_utils/parameter_tuning_utils.h
-        bench_utils/sift.h
-        bench_utils/utils.h
-        parameter-tuning/bench_flat.cpp
-)
-
 set(bench_parameter_tuning_ivfflat_srcs
         bench_utils/parameter_tuning_utils.h
         bench_utils/sift.h
@@ -69,16 +62,6 @@ target_link_libraries(indexbuilder_bench
         )
 
 target_link_libraries(indexbuilder_bench benchmark::benchmark_main)
-
-add_executable(bench_parameter_tuning_flat ${bench_parameter_tuning_flat_srcs} ${util_srcs})
-target_link_libraries(bench_parameter_tuning_flat
-        milvus_segcore
-        milvus_indexbuilder
-        log
-        pthread
-        )
-
-target_link_libraries(bench_parameter_tuning_flat benchmark::benchmark_main)
 
 add_executable(bench_parameter_tuning_ivfflat ${bench_parameter_tuning_ivfflat_srcs})
 target_link_libraries(bench_parameter_tuning_ivfflat

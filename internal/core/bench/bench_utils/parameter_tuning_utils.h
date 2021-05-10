@@ -27,6 +27,263 @@
 #include "test_utils/indexbuilder_test_utils.h"
 
 namespace {
+template <typename Clock = std::chrono::high_resolution_clock>
+class Timer {
+    const typename Clock::time_point start_point;
+ public:
+    Timer() : start_point(Clock::now()) {}
+
+    template <typename Rep = typename Clock::duration::rep, typename Units = typename Clock::duration>
+    Rep elapsed_time() const {
+        std::atomic_thread_fence(std::memory_order_relaxed);
+        auto counted_time = std::chrono::duration_cast<Units>(Clock::now() - start_point).count();
+        std::atomic_thread_fence(std::memory_order_relaxed);
+        return static_cast<Rep>(counted_time);
+    }
+};
+
+class IVFFLAT_Parameter {
+ private:
+    int nlist{-1};   // Build
+    int nprobe{-1};  // Search
+
+ public:
+    IVFFLAT_Parameter() = default;
+
+    IVFFLAT_Parameter(int nlist, int nprobe) : nlist{nlist}, nprobe{nprobe} {
+        assert(nlist >= 1 && nlist <= 65536);
+        assert(nprobe >= 1 && nprobe <= nlist);
+    }
+
+    bool IsInvalid() {
+        return (nlist == -1 && nprobe == -1);
+    }
+
+    int Get_nlist() const {
+        return nlist;
+    }
+
+    bool CheckBuildPara(int nlist) {
+        bool equal = (this->nlist == nlist);
+        if (!equal) {
+            this->nlist = nlist;
+            std::cout << "[Benchmark] REBUILD INDEX => A New Build Parameter is Found: nlist = " << nlist << std::endl;
+            std::cout << *this;
+        }
+        return equal;
+    }
+
+    int Get_nprobe() const {
+        return nprobe;
+    }
+
+    void SetSearchPara(int nprobe) {
+        this->nprobe = nprobe;
+    }
+
+    void Set(int nlist, int nprobe) {
+        this->nlist = nlist;
+        this->nprobe = nprobe;
+        assert(nlist >= 1 && nlist <= 65536);
+        assert(nprobe >= 1 && nprobe <= nlist);
+        std::cout << *this;
+    }
+
+    friend std::ostream& operator<<(std::ostream &os, const IVFFLAT_Parameter &p) {
+        os << "[Benchmark] IVFFLAT_Parameter: nlist = " << p.nlist << ", nprobe = " << p.nprobe << std::endl;
+        return os;
+    }
+};
+
+class IVFSQ8_Parameter {
+ private:
+    int nlist{-1};   // Build
+    int nprobe{-1};  // Search
+
+ public:
+    IVFSQ8_Parameter() = default;
+
+    IVFSQ8_Parameter(int nlist, int nprobe) : nlist{nlist}, nprobe{nprobe} {
+        assert(nlist >= 1 && nlist <= 65536);
+        assert(nprobe >= 1 && nprobe <= nlist);
+    }
+
+    bool IsInvalid() {
+        return (nlist == -1 && nprobe == -1);
+    }
+
+    int Get_nlist() const {
+        return nlist;
+    }
+
+    bool CheckBuildPara(int nlist) {
+        bool equal = (this->nlist == nlist);
+        if (!equal) {
+            this->nlist = nlist;
+            std::cout << "[Benchmark] REBUILD INDEX => A New Build Parameter is Found: nlist = " << nlist << std::endl;
+            std::cout << *this;
+        }
+        return equal;
+    }
+
+    int Get_nprobe() const {
+        return nprobe;
+    }
+
+    void SetSearchPara(int nprobe) {
+        this->nprobe = nprobe;
+    }
+
+    void Set(int nlist, int nprobe) {
+        this->nlist = nlist;
+        this->nprobe = nprobe;
+        assert(nlist >= 1 && nlist <= 65536);
+        assert(nbits == 4 || nbits == 6 || nbits == 8 || nbits == 16);
+        assert(nprobe >= 1 && nprobe <= nlist);
+        std::cout << *this;
+    }
+
+    friend std::ostream& operator<<(std::ostream &os, const IVFSQ8_Parameter &p) {
+        os << "[Benchmark] IVFSQ8_Parameter: nlist = " << p.nlist << ", nprobe = " << p.nprobe << std::endl;
+        return os;
+    }
+};
+
+//class IVFSQ8_Parameter {
+// private:
+//    int nlist{-1};   // Build
+//    int nbits{-1};   // Build
+//    int nprobe{-1};  // Search
+//
+// public:
+//    IVFSQ8_Parameter() = default;
+//
+//    IVFSQ8_Parameter(int nlist, int nbits, int nprobe) : nlist{nlist}, nbits{nbits}, nprobe{nprobe} {
+//        assert(nlist >= 1 && nlist <= 65536);
+//        assert(nbits == 4 || nbits == 6 || nbits == 8 || nbits == 16);
+//        assert(nprobe >= 1 && nprobe <= nlist);
+//    }
+//
+//    bool IsInvalid() {
+//        return (nlist == -1 && nbits == -1 && nprobe == -1);
+//    }
+//
+//    int Get_nlist() const {
+//        return nlist;
+//    }
+//
+//    int Get_nbits() const {
+//        return nbits;
+//    }
+//
+//    bool CheckBuildPara(int nlist, int nbits) {
+//        bool equal = (this->nlist == nlist && this->nbits == nbits);
+//        if (!equal) {
+//            this->nlist = nlist;
+//            this->nbits = nbits;
+//            std::cout << "[Benchmark] REBUILD INDEX => A New Build Parameter is Found: nlist = " << nlist << ", nbits = " << nbits << std::endl;
+//            std::cout << *this;
+//        }
+//        return equal;
+//    }
+//
+//    int Get_nprobe() const {
+//        return nprobe;
+//    }
+//
+//    void SetSearchPara(int nprobe) {
+//        this->nprobe = nprobe;
+//    }
+//
+//    void Set(int nlist, int nbits, int nprobe) {
+//        this->nlist = nlist;
+//        this->nbits = nbits;
+//        this->nprobe = nprobe;
+//        assert(nlist >= 1 && nlist <= 65536);
+//        assert(nbits == 4 || nbits == 6 || nbits == 8 || nbits == 16);
+//        assert(nprobe >= 1 && nprobe <= nlist);
+//        std::cout << *this;
+//    }
+//
+//    friend std::ostream& operator<<(std::ostream &os, const IVFSQ8_Parameter &p) {
+//        os << "[Benchmark] IVFSQ8_Parameter: nlist = " << p.nlist << ", nbits = " << p.nbits << ", nprobe = " << p.nprobe << std::endl;
+//        return os;
+//    }
+//};
+
+class IVFPQ_Parameter {
+ private:
+    int nlist{-1};   // Build
+    int nbits{-1};   // Build
+    int m{-1};   // Build
+    int nprobe{-1};  // Search
+    int d{-1};
+
+ public:
+    IVFPQ_Parameter() = default;
+
+    IVFPQ_Parameter(int nlist, int nbits, int m, int d, int nprobe) : nlist{nlist}, nbits{nbits}, m{m}, d{d}, nprobe{nprobe} {
+        assert(nlist >= 1 && nlist <= 65536);
+        assert(nbits == 4 || nbits == 6 || nbits == 8 || nbits == 16);
+        assert(d % m == 0);
+        assert(nprobe >= 1 && nprobe <= nlist);
+    }
+
+    bool IsInvalid() {
+        return (nlist == -1 && nbits == -1 && m == -1 && d == -1 && nprobe == -1);
+    }
+
+    int Get_nlist() const {
+        return nlist;
+    }
+
+    int Get_nbits() const {
+        return nbits;
+    }
+
+    int Get_m() const {
+        return m;
+    }
+
+    bool CheckBuildPara(int nlist, int nbits, int m) {
+        bool equal = (this->nlist == nlist && this->nbits == nbits && this->m == m);
+        if (!equal) {
+            this->nlist = nlist;
+            this->nbits = nbits;
+            this->m = m;
+            std::cout << "[Benchmark] REBUILD INDEX => A New Build Parameter is Found: " << nlist << ", nbits = " << nbits << ", m = " << m << std::endl;
+            std::cout << *this;
+        }
+        return equal;
+    }
+
+    int Get_nprobe() const {
+        return nprobe;
+    }
+
+    void SetSearchPara(int nprobe) {
+        this->nprobe = nprobe;
+    }
+
+    void Set(int nlist, int nbits, int m, int d, int nprobe) {
+        this->nlist = nlist;
+        this->nbits = nbits;
+        this->m = m;
+        this->d = d;
+        this->nprobe = nprobe;
+        assert(nlist >= 1 && nlist <= 65536);
+        assert(nbits == 4 || nbits == 6 || nbits == 8 || nbits == 16);
+        assert(d % m == 0);
+        assert(nprobe >= 1 && nprobe <= nlist);
+        std::cout << *this;
+    }
+
+    friend std::ostream& operator<<(std::ostream &os, const IVFPQ_Parameter &p) {
+        os << "[Benchmark] IVFSQ8_Parameter: nlist = " << p.nlist << ", nbits = " << p.nbits << ", m = " << p.m << ", nprobe = " << p.nprobe << std::endl;
+        return os;
+    }
+};
+
 auto
 TODELETE_generate_conf(const milvus::knowhere::IndexType& index_type, const milvus::knowhere::MetricType& metric_type) {
     if (index_type == milvus::knowhere::IndexEnum::INDEX_FAISS_IDMAP) {

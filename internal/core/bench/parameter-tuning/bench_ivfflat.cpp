@@ -10,11 +10,7 @@
 // or implied. See the License for the specific language governing permissions and limitations under the License
 
 #include <benchmark/benchmark.h>
-#include <tuple>
-#include <unordered_map>
-#include <google/protobuf/text_format.h>
 
-#include "pb/index_cgo_msg.pb.h"
 #include "index/knowhere/knowhere/index/vector_index/helpers/IndexParameter.h"
 #include "index/knowhere/knowhere/index/vector_index/adapter/VectorAdapter.h"
 #include "indexbuilder/IndexWrapper.h"
@@ -24,84 +20,36 @@
 #include "bench_utils/parameter_tuning_utils.h"
 #include "bench_utils/sift.h"
 
-constexpr int64_t NB = 1000000;
+namespace knowhere = milvus::knowhere;
 
-namespace indexcgo = milvus::proto::indexcgo;
+//// TODO(jigao): Add more metrics.
+//auto metric_type_collections = [] {
+//    static std::unordered_map<int64_t, milvus::knowhere::MetricType> collections{
+//        {0, milvus::knowhere::Metric::L2},
+//    };
+//    return collections;
+//}();
 
-// TODO(jigao): Add more metrics.
-auto metric_type_collections = [] {
-    static std::unordered_map<int64_t, milvus::knowhere::MetricType> collections{
-        {0, milvus::knowhere::Metric::L2},
-    };
-    return collections;
-}();
+////    auto is_binary = state.range(2);
+//auto is_binary = false;
+//auto dataset = GenDataset(NB, metric_type, is_binary);
 
-static void
-IVFFLAT_build(benchmark::State& state) {
-    auto nlist = state.range(0);
-    state.counters["nlist"] = nlist;
-    auto index_type = milvus::knowhere::IndexEnum::INDEX_FAISS_IVFFLAT;
-    //    auto metric_type = metric_type_collections.at(state.range(1));
-    auto metric_type = milvus::knowhere::Metric::L2;
-
-    indexcgo::TypeParams type_params;
-    indexcgo::IndexParams index_params;
-
-    std::tie(type_params, index_params) = ivfflat_generate_params(index_type, metric_type, nlist);
-
-    std::string type_params_str, index_params_str;
-    bool ok;
-    ok = google::protobuf::TextFormat::PrintToString(type_params, &type_params_str);
-    assert(ok);
-    ok = google::protobuf::TextFormat::PrintToString(index_params, &index_params_str);
-    assert(ok);
-
-    //    auto is_binary = state.range(2);
-    auto is_binary = false;
-    auto dataset = GenDataset(NB, metric_type, is_binary);
-    auto xb_data = dataset.get_col<float>(0);
-    auto xb_dataset = milvus::knowhere::GenDataset(NB, DIM, xb_data.data());
-
-    std::unique_ptr<milvus::indexbuilder::IndexWrapper> index(nullptr);
-    for (auto _ : state) {
-        index = std::make_unique<milvus::indexbuilder::IndexWrapper>(type_params_str.c_str(), index_params_str.c_str());
-        index->BuildWithoutIds(xb_dataset);
-    }
-    index->UpdateIndexSize();
-    state.counters["Index Size"] = index->Size();
-}
-
-// IVF_FLAT, L2, VectorFloat
-// BENCHMARK(IndexBuilder_build)->Name("IVF_FLAT/L2/VectorFloat")->Args({0, 0, false});
-
-// nlist \in [1024, 2048, 3072, 4096, ..., 65536]
-// BENCHMARK(IndexBuilder_build)->Name("IVF_FLAT/L2/VectorFloat")->DenseRange(1024, 65536, 1024);
-
-// nlist \in [1024, 2048, 4096, 8192, ..., 65536]
-//BENCHMARK(IVFFLAT_build)->Name("Build: IVF_FLAT/L2/VectorFloat")->RangeMultiplier(2)->Range(1024, 65536);
-
-static void
-IVFFLAT_search(benchmark::State& state) {
-    auto index_type = milvus::knowhere::IndexEnum::INDEX_FAISS_IVFFLAT;
-    auto metric_type = milvus::knowhere::Metric::L2;
-
-    auto index = milvus::knowhere::VecIndexFactory::GetInstance().CreateVecIndex(index_type);
-
-    double t0 = elapsed();
-
-    auto nlist = state.range(0);
-    state.counters["nlist"] = nlist;
-    auto nprobe = state.range(1);
-    state.counters["nprobe"] = nprobe;
-
-    auto conf = milvus::knowhere::Config{
-            {milvus::knowhere::meta::DIM, 128},
-            {milvus::knowhere::meta::TOPK, 100},
-            {milvus::knowhere::IndexParams::nlist, nlist},
-            {milvus::knowhere::IndexParams::nprobe, nprobe},
-            {milvus::knowhere::Metric::TYPE, metric_type},
-            {milvus::knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
-//            {milvus::knowhere::meta::DEVICEID, DEVICEID},
+class IVFFlat_Fixture_SIFT1M : public benchmark::Fixture {
+ public:
+    const knowhere::IndexType index_type = knowhere::IndexEnum::INDEX_FAISS_IVFFLAT;
+    knowhere::MetricType metric_type = knowhere::Metric::L2;
+    knowhere::VecIndexPtr index = knowhere::VecIndexFactory::GetInstance().CreateVecIndex(index_type);
+    IVFFLAT_Parameter para;
+    knowhere::Config conf = knowhere::Config{
+            {knowhere::meta::DIM, 128},
+            {knowhere::meta::TOPK, 100},
+            {knowhere::IndexParams::nlist, -1},
+            {knowhere::IndexParams::nprobe, -1},
+            {knowhere::Metric::TYPE, metric_type},
+            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
+#ifdef MILVUS_GPU_VERSION
+            {knowhere::meta::DEVICEID, DEVICEID},
+#endif
     };
 
     size_t d;
@@ -110,34 +58,100 @@ IVFFLAT_search(benchmark::State& state) {
     size_t nq;
     size_t k;                // nb of results per query in the GT
     int64_t* gt; // nq * k matrix of ground-truth nearest-neighbors
+    knowhere::DatasetPtr xq_dataset;
 
-    train(t0, index_type, d, nt, index, conf);
+    double train_time_min, train_time_max, train_time_avg;
+    double add_points_time_min, add_points_time_max, add_points_time_avg;
 
-    add_points(t0, index_type, d, nb, index, conf);
+    IVFFlat_Fixture_SIFT1M() {
+        std::cout << "[Benchmark] IVFFlat_Fixture Benchmark Constructor only called once per fixture testcase hat uses it." << std::endl;
+    }
 
-    auto xq_dataset = load_queries(t0, d, nq);
+    void SetUp(::benchmark::State& state) {
+        static bool needBuildIndex = true;
+        static bool needLoadQuery = true;
+        if (para.IsInvalid()) {
+            para.Set(state.range(0), state.range(1));
+            conf[knowhere::IndexParams::nlist] = para.Get_nlist();
+            conf[knowhere::IndexParams::nprobe] = para.Get_nprobe();
+        }
 
-    load_ground_truth(t0, nq, k, gt, conf);
+        // Build Parameters: nlist
+        auto nlist = state.range(0);
+        state.counters["nlist"] = nlist;
+        if (!para.CheckBuildPara(nlist)) {
+            std::cout << "[Benchmark] IVFFlat_Fixture Benchmark Constructor only called once per fixture testcase hat uses it." << std::endl;
+            conf[knowhere::IndexParams::nlist] = para.Get_nlist();
+            needBuildIndex = true;
+        }
 
+        // Search Parameters: nprobe
+        auto nprobe = state.range(1);
+        state.counters["nprobe"] = nprobe;
+        conf[knowhere::IndexParams::nprobe] = para.Get_nprobe();
+        para.SetSearchPara(nprobe);
+
+        // Build Index if necessary
+        if (needBuildIndex) {
+            std::tie(train_time_min, train_time_max, train_time_avg) = train(d, nt, index, conf);
+            std::tie(add_points_time_min, add_points_time_max, add_points_time_avg) = add_points(index_type, d, nb, index, conf, nt);
+            needBuildIndex = false;
+        }
+        state.counters["train time min"] = train_time_min;
+        state.counters["train time max"] = train_time_max;
+        state.counters["train time avg"] = train_time_avg;
+        state.counters["add points time min"] = add_points_time_min;
+        state.counters["add points time max"] = add_points_time_max;
+        state.counters["add points time avg"] = add_points_time_avg;
+        index->UpdateIndexSize();
+        state.counters["Index Size"] = index->Size();
+
+        if (needLoadQuery) {
+            xq_dataset = load_queries(d, nq);
+            load_ground_truth(nq, k, gt, conf);
+        }
+        needLoadQuery = false;
+    }
+
+    void TearDown(const ::benchmark::State& state) {}
+};
+
+BENCHMARK_DEFINE_F(IVFFlat_Fixture_SIFT1M, IVFFlat_SIFT1M)(benchmark::State& state) {
     auto result = milvus::knowhere::DatasetPtr(nullptr);
-
+    conf[knowhere::IndexParams::nprobe] = para.Get_nprobe();
+    assert(para.Get_nprobe() == state.range(1));
     {
-        printf("[%.3f s] Perform a search on %ld queries\n",
-               elapsed() - t0,
-               nq);
-
+        std::cout << "[Benchmark] Perform a search on " << nq << " queries" << std::endl;
+        std::cout << para;
+        // Wash the cache
+        result = index->Query(xq_dataset, conf, nullptr);
         for (auto _ : state) {
             result = index->Query(xq_dataset, conf, nullptr);
         }
     }
 
-    auto recall = compute_recall(t0, nq, k, result, gt);
-    state.counters["Recall"] = recall;
+    // QPS
+    state.SetItemsProcessed(state.iterations() * nq);
 
-    ReleaseQuery(xq_dataset);
+    auto recall = compute_recall(nq, k, result, gt, k);
+    state.counters["Recall"] = recall;
+    auto recall_1 = compute_recall(nq, k, result, gt, 1);
+    state.counters["Recall@1"] = recall_1;
+    if (k >= 10) {
+        auto recall_10 = compute_recall(nq, k, result, gt, 10);
+        state.counters["Recall@10"] = recall_10;
+    }
+    if (k >= 100) {
+        auto recall_100 = compute_recall(nq, k, result, gt, 100);
+        state.counters["Recall@100"] = recall_100;
+    }
+
+//    ReleaseQuery(xq_dataset);
     ReleaseQueryResult(result);
 }
 
+// nlist \in [1024, 2048, 4096, 8192, ..., 65536]
+// nprobe \in [1, 2, 4, 8, ..., nlist]
 static void
 CustomArguments(benchmark::internal::Benchmark* b) {
     for (int nlist = 1024; nlist <= 65536; nlist *= 2) {
@@ -147,7 +161,6 @@ CustomArguments(benchmark::internal::Benchmark* b) {
     }
 }
 
-BENCHMARK(IVFFLAT_search)->Name("Search: IVFFLAT/L2/VectorFloat")->Apply(CustomArguments);
-
-//BENCHMARK(IVFFLAT_search)->Name("Search: IVFFLAT/L2/VectorFloat")->Args({100, 4});
+// ->Name("IVFFLAT/L2/VectorFloat")
+BENCHMARK_REGISTER_F(IVFFlat_Fixture_SIFT1M, IVFFlat_SIFT1M)->Unit(benchmark::kMillisecond)->Apply(CustomArguments);
 

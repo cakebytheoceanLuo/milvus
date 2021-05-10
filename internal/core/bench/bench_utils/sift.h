@@ -38,6 +38,9 @@ const std::string sift_path = "/home/jigao/Desktop/sift/";
  * I/O functions for fvecs and ivecs
  *****************************************************/
 
+// TODO(jigao) set this one!
+int64_t SIFT_DIM = 128;
+
 float*
 fvecs_read(const char* fname, size_t* d_out, size_t* n_out) {
     FILE* f = fopen(fname, "r");
@@ -47,8 +50,13 @@ fvecs_read(const char* fname, size_t* d_out, size_t* n_out) {
         abort();
     }
     int d;
-    fread(&d, 1, sizeof(int), f);
+    size_t d_read = fread(&d, 1, sizeof(int), f);
+    assert(d_read == sizeof(int));
     assert((d > 0 && d < 1000000) || !"unreasonable dimension");
+    SIFT_DIM = d;
+    if (d != SIFT_DIM) {
+        std::cerr << "DIM is wrong, DIM := " << SIFT_DIM << ", d :=" << d << std::endl;
+    }
     fseek(f, 0, SEEK_SET);
     struct stat st;
     fstat(fileno(f), &st);
@@ -94,66 +102,160 @@ elapsed() {
     return tv.tv_sec + tv.tv_usec * 1e-6;
 }
 
-void
-train(double start_time, milvus::knowhere::IndexType index_type,
-    size_t& d, size_t& nt, milvus::knowhere::VecIndexPtr& index, milvus::knowhere::Config& conf) {
-    printf("[%.3f s] Loading train set\n", elapsed() - start_time);
+std::tuple<double, double, double>
+Cal_Min_Max_Avg(const std::vector<double>& vec) {
+    double min{std::numeric_limits<double>::max()}, max{0}, sum{0};
+    for (const auto ele : vec){
+        assert(ele >= 0 && "Time should be larger than 0s.");
+        sum += ele;
+        if (max < ele){
+            max = ele;
+        }
+        if (min > ele){
+            min = ele;
+        }
+    }
+    double avg = sum / vec.size();
+    return {min, max, avg};
+}
+
+std::tuple<double, double, double>
+train(size_t& d, size_t& nt, milvus::knowhere::VecIndexPtr& index, milvus::knowhere::Config& conf) {
     float* xb_data = fvecs_read(sift_path + "sift_learn.fvecs", &d, &nt);
-
-    printf("[%.3f s] Preparing index \"%s\" d=%ld\n",
-           elapsed() - start_time,
-           index_type.c_str(),
-           d);
-
-    printf("[%.3f s] Training on %ld vectors\n", elapsed() - start_time, nt);
     auto xt_dataset = milvus::knowhere::GenDataset(nt, d, static_cast<const void*>(xb_data));
 
     // Fix the conf. with dimension from file.
     conf[milvus::knowhere::meta::DIM] = d;
 
-    index->Train(xt_dataset, conf);
+    std::vector<double> vec;
+    {
+        auto time_n_train = [&](size_t n) {
+            for (size_t i = 0; i < n; i++) {
+                Timer t;
+                index->Train(xt_dataset, conf);
+                double duration = t.elapsed_time<double, std::chrono::milliseconds>();
+                std::cout << "[Benchmark] index->Train: " << duration << " ms (milliseconds) on " << nt << " vectors" << std::endl;
+                vec.push_back(duration);
+            }
+        };
+
+        time_n_train(1);
+        assert(!vec.empty());
+
+        if (vec.front() < 1000) {
+            // If less than 1000ms (1s), iterate 100 times (together 100s).
+            std::cout << "[Benchmark] index->Train less than 1000ms (1s), iterate 100 times (together 100s)." << std::endl;
+            time_n_train(100);
+        } else if (vec.front() < 5000) {
+            // If less than 5000ms (5s), iterate 20 times (together 100s).
+            std::cout << "[Benchmark] index->Train less than 5000ms (5s), iterate 20 times (together 100s)." << std::endl;
+            time_n_train(20);
+        } else if (vec.front() < 10000) {
+            // If less than 10000ms (10s), iterate 10 times (together 100s).
+            std::cout << "[Benchmark] index->Train less than 10000ms (10s), iterate 10 times (together 10s)." << std::endl;
+            time_n_train(10);
+        } else {
+            // If more than 10000ms (10s), iterate 2 times.
+            std::cout << "[Benchmark] index->Train more than 10000ms (10s), iterate 2 times." << std::endl;
+            time_n_train(2);
+        }
+    }
 
     delete[] xb_data;
+    return Cal_Min_Max_Avg(vec);
 }
 
-void
-add_points(double start_time, milvus::knowhere::IndexType index_type,
-           size_t d, size_t& nb, milvus::knowhere::VecIndexPtr& index, milvus::knowhere::Config& conf) {
-    printf("[%.3f s] Loading database\n", elapsed() - start_time);
-
+std::tuple<double, double, double>
+add_points(milvus::knowhere::IndexType index_type,
+           size_t d, size_t& nb, milvus::knowhere::VecIndexPtr& index, milvus::knowhere::Config& conf, size_t nt) {
     size_t d2;
     float* xb = fvecs_read(sift_path + "sift_base.fvecs", &d2, &nb);
     assert(d == d2 || !"dataset does not have same dimension as train set");
 
-    printf("[%.3f s] Indexing database, size %ld*%ld\n",
-           elapsed() - start_time,
-           nb,
-           d);
-
     auto xb_dataset = milvus::knowhere::GenDataset(nb, d, static_cast<const void*>(xb));
-    index->AddWithoutIds(xb_dataset, conf);
+    double duration{0};
 
-    if (is_in_nm_list(index_type)) {
-        milvus::knowhere::BinarySet bs = index->Serialize(conf);
-        int64_t dim = xb_dataset->Get<int64_t>(milvus::knowhere::meta::DIM);
-        int64_t rows = xb_dataset->Get<int64_t>(milvus::knowhere::meta::ROWS);
-        auto raw_data = xb_dataset->Get<const void*>(milvus::knowhere::meta::TENSOR);
+    std::vector<double> vec;
+    {
+        auto time_1_add_points = [&]() {
+            Timer t;
+            index->AddWithoutIds(xb_dataset, conf);
+            if (is_in_nm_list(index_type)) {
+                milvus::knowhere::BinarySet bs = index->Serialize(conf);
+                int64_t dim = xb_dataset->Get<int64_t>(milvus::knowhere::meta::DIM);
+                int64_t rows = xb_dataset->Get<int64_t>(milvus::knowhere::meta::ROWS);
+                auto raw_data = xb_dataset->Get<const void*>(milvus::knowhere::meta::TENSOR);
 
-        milvus::knowhere::BinaryPtr bptr = std::make_shared<milvus::knowhere::Binary>();
-        bptr->data = std::shared_ptr<uint8_t[]>((uint8_t*)raw_data, [&](uint8_t*) {});  // avoid repeated deconstruction
-        bptr->size = dim * rows * sizeof(float);
-        bs.Append(RAW_DATA, bptr);
-        index->Load(bs);
+                milvus::knowhere::BinaryPtr bptr = std::make_shared<milvus::knowhere::Binary>();
+                bptr->data = std::shared_ptr<uint8_t[]>((uint8_t*)raw_data, [&](uint8_t*) {});  // avoid repeated deconstruction
+                bptr->size = dim * rows * sizeof(float);
+                bs.Append(RAW_DATA, bptr);
+                index->Load(bs);
+            }
+            duration = t.elapsed_time<unsigned int, std::chrono::milliseconds>();
+            std::cout << "index->AddWithoutIds: " << duration << " ms (milliseconds) on " << nb << " vectors" << std::endl;
+            vec.push_back(duration);
+        };
+
+        auto time_n_add_points = [&](size_t n) {
+            for (size_t i = 0; i < n; i++) {
+                // Need to re-train a index.
+                milvus::knowhere::VecIndexPtr index_ = milvus::knowhere::VecIndexFactory::GetInstance().CreateVecIndex(index_type);
+                float* xb_data = fvecs_read(sift_path + "sift_learn.fvecs", &d, &nt);
+                auto xt_dataset = milvus::knowhere::GenDataset(nt, d, static_cast<const void*>(xb_data));
+                index_->Train(xt_dataset, conf);
+                delete[] xb_data;
+
+                Timer t;
+                index_->AddWithoutIds(xb_dataset, conf);
+                if (is_in_nm_list(index_type)) {
+                    milvus::knowhere::BinarySet bs = index->Serialize(conf);
+                    int64_t dim = xb_dataset->Get<int64_t>(milvus::knowhere::meta::DIM);
+                    int64_t rows = xb_dataset->Get<int64_t>(milvus::knowhere::meta::ROWS);
+                    auto raw_data = xb_dataset->Get<const void*>(milvus::knowhere::meta::TENSOR);
+
+                    milvus::knowhere::BinaryPtr bptr = std::make_shared<milvus::knowhere::Binary>();
+                    bptr->data = std::shared_ptr<uint8_t[]>((uint8_t*)raw_data, [&](uint8_t*) {});  // avoid repeated deconstruction
+                    bptr->size = dim * rows * sizeof(float);
+                    bs.Append(RAW_DATA, bptr);
+                    index_->Load(bs);
+                }
+                duration = t.elapsed_time<unsigned int, std::chrono::milliseconds>();
+                std::cout << "index->AddWithoutIds: " << duration << " ms (milliseconds) on " << nb << " vectors" << std::endl;
+                vec.push_back(duration);
+            }
+        };
+
+        time_1_add_points();
+        assert(!vec.empty());
+
+        if (vec.front() < 1000) {
+            // If less than 1000ms (1s), iterate 100 times (together 100s).
+            std::cout << "[Benchmark] index->AddWithoutIds less than 1000ms (1s), iterate 100 times (together 100s)." << std::endl;
+            time_n_add_points(100);
+        } else if (vec.front() < 5000) {
+            // If less than 5000ms (5s), iterate 20 times (together 100s).
+            std::cout << "[Benchmark] index->AddWithoutIds less than 5000ms (5s), iterate 20 times (together 100s)." << std::endl;
+            time_n_add_points(20);
+        } else if (vec.front() < 10000) {
+            // If less than 10000ms (10s), iterate 10 times (together 100s).
+            std::cout << "[Benchmark] index->AddWithoutIds less than 10000ms (10s), iterate 10 times (together 10s)." << std::endl;
+            time_n_add_points(10);
+        } else {
+            // If more than 10000ms (10s), iterate 2 times.
+            std::cout << "[Benchmark] index->AddWithoutIds more than 10000ms (10s), iterate 2 times." << std::endl;
+            time_n_add_points(2);
+        }
+
     }
 
     delete[] xb;
+    return Cal_Min_Max_Avg(vec);
 }
 
 auto
-load_queries(double start_time,
-             size_t d, size_t& nq) {
-    printf("[%.3f s] Loading queries\n", elapsed() - start_time);
-
+load_queries(size_t d, size_t& nq) {
+    std::cout << "[Benchmark] Loading queries" << std::endl;
     size_t d2;
     float* xq = fvecs_read(sift_path + "sift_query.fvecs", &d2, &nq);
     auto xq_dataset = milvus::knowhere::GenDataset(nq, d, static_cast<const void*>(xq));
@@ -162,11 +264,8 @@ load_queries(double start_time,
 }
 
 auto
-load_ground_truth(double start_time, size_t nq, size_t& k, int64_t*& gt, milvus::knowhere::Config& conf) {
-    printf("[%.3f s] Loading ground truth for %ld queries\n",
-           elapsed() - start_time,
-           nq);
-
+load_ground_truth(size_t nq, size_t& k, int64_t*& gt, milvus::knowhere::Config& conf) {
+    std::cout << "[Benchmark] Loading ground truth for " << nq << " queries" << std::endl;
     // load ground-truth and convert int to long
     size_t nq2;
     int* gt_int = ivecs_read(sift_path + "sift_groundtruth.ivecs", &k, &nq2);
@@ -183,9 +282,8 @@ load_ground_truth(double start_time, size_t nq, size_t& k, int64_t*& gt, milvus:
 }
 
 double
-compute_recall (double start_time,
-                size_t nq, size_t k, milvus::knowhere::DatasetPtr& result, int64_t*& gt, size_t num_to_include) {
-    printf("[%.3f s] Compute recalls@%zu\n", elapsed() - start_time, num_to_include);
+compute_recall (size_t nq, size_t k, milvus::knowhere::DatasetPtr& result, int64_t*& gt, size_t num_to_include) {
+    std::cout << "[Benchmark] Compute recalls@" << num_to_include << std::endl;
 
     // evaluate result by hand.
     auto ids = result->Get<int64_t*>(milvus::knowhere::meta::IDS);
@@ -197,7 +295,7 @@ compute_recall (double start_time,
         std::sort(ids_vec.begin(), ids_vec.end());
         std::vector<int64_t> v(nq * 2);
         std::vector<int64_t>::iterator it;
-        it=std::set_intersection (gt_vec.begin(), gt_vec.end(), ids_vec.begin(), ids_vec.end(), v.begin());
+        it=std::set_intersection(gt_vec.begin(), gt_vec.end(), ids_vec.begin(), ids_vec.end(), v.begin());
         v.resize(it - v.begin());
         hits += v.size();
     }
@@ -205,7 +303,6 @@ compute_recall (double start_time,
 
 
 //    int n_1 = 0, n_10 = 0, n_100 = 0;
-//    size_t hits = 0;
 //    for (int i = 0; i < nq; i++) {
 //        // The top 1 NN.
 //        int gt_nn = gt[i * k];
