@@ -44,6 +44,13 @@ set(bench_parameter_tuning_ivfpq_srcs
         parameter-tuning/bench_ivfpq.cpp
 )
 
+set(bench_parameter_tuning_hnsw_srcs
+        bench_utils/parameter_tuning_utils.h
+        bench_utils/sift.h
+        bench_utils/utils.h
+        parameter-tuning/bench_hnsw.cpp
+)
+
 add_executable(all_bench ${bench_srcs})
 target_link_libraries(all_bench
         milvus_segcore
@@ -92,3 +99,13 @@ target_link_libraries(bench_parameter_tuning_ivfpq
         )
 
 target_link_libraries(bench_parameter_tuning_ivfpq benchmark::benchmark_main)
+
+add_executable(bench_parameter_tuning_hnsw ${bench_parameter_tuning_hnsw_srcs})
+target_link_libraries(bench_parameter_tuning_hnsw
+        milvus_segcore
+        milvus_indexbuilder
+        log
+        pthread
+        )
+
+target_link_libraries(bench_parameter_tuning_hnsw benchmark::benchmark_main)

@@ -138,7 +138,7 @@ class IVFSQ8_Parameter {
         this->nlist = nlist;
         this->nprobe = nprobe;
         assert(nlist >= 1 && nlist <= 65536);
-        assert(nbits == 4 || nbits == 6 || nbits == 8 || nbits == 16);
+//        assert(nbits == 4 || nbits == 6 || nbits == 8 || nbits == 16);
         assert(nprobe >= 1 && nprobe <= nlist);
         std::cout << *this;
     }
@@ -224,7 +224,7 @@ class IVFPQ_Parameter {
 
     IVFPQ_Parameter(int nlist, int nbits, int m, int d, int nprobe) : nlist{nlist}, nbits{nbits}, m{m}, d{d}, nprobe{nprobe} {
         assert(nlist >= 1 && nlist <= 65536);
-        assert(nbits == 4 || nbits == 6 || nbits == 8 || nbits == 16);
+        assert(nbits >= 1 && nbits <= 16);
         assert(d % m == 0);
         assert(nprobe >= 1 && nprobe <= nlist);
     }
@@ -272,14 +272,76 @@ class IVFPQ_Parameter {
         this->d = d;
         this->nprobe = nprobe;
         assert(nlist >= 1 && nlist <= 65536);
-        assert(nbits == 4 || nbits == 6 || nbits == 8 || nbits == 16);
+        assert(nbits >= 1 && nbits <= 16);
         assert(d % m == 0);
         assert(nprobe >= 1 && nprobe <= nlist);
         std::cout << *this;
     }
 
     friend std::ostream& operator<<(std::ostream &os, const IVFPQ_Parameter &p) {
-        os << "[Benchmark] IVFSQ8_Parameter: nlist = " << p.nlist << ", nbits = " << p.nbits << ", m = " << p.m << ", nprobe = " << p.nprobe << std::endl;
+        os << "[Benchmark] IVFPQ_Parameter: nlist = " << p.nlist << ", nbits = " << p.nbits << ", m = " << p.m << ", nprobe = " << p.nprobe << std::endl;
+        return os;
+    }
+};
+
+class HNSW_Parameter {
+private:
+    int m{-1};   // Build
+    int efConstruction{-1};  // Build
+    int ef{-1};  // Search
+
+public:
+    HNSW_Parameter() = default;
+
+    HNSW_Parameter(int m, int efConstruction) : m{m}, efConstruction{efConstruction}, ef{ef} {
+        assert(m >= 4 && m <= 64);
+        assert(efConstruction >= 8 && efConstruction <= 512);
+        assert(ef <= 32768);
+    }
+
+    bool IsInvalid() {
+        return (m == -1 && efConstruction == -1 && ef == -1);
+    }
+
+    int Get_m() const {
+        return m;
+    }
+
+    bool CheckBuildPara(int m, int efConstruction) {
+        bool equal = (this->m == m && this->efConstruction == efConstruction);
+        if (!equal) {
+            this->m = m;
+            this->efConstruction = efConstruction;
+            std::cout << "[Benchmark] REBUILD INDEX => A New Build Parameter is Found: m = " << m << " efConstruction = " << efConstruction << std::endl;
+            std::cout << *this;
+        }
+        return equal;
+    }
+
+    int Get_efConstruction() const {
+        return efConstruction;
+    }
+
+    void SetSearchPara(int ef) {
+        this->ef = ef;
+    }
+
+    int Get_ef() const {
+        return ef;
+    }
+
+    void Set(int m, int efConstruction, int ef) {
+        this->m = m;
+        this->efConstruction = efConstruction;
+        this->ef = ef;
+        assert(m >= 4 && m <= 64);
+        assert(efConstruction >= 8 && efConstruction <= 512);
+        assert(ef <= 32768);
+        std::cout << *this;
+    }
+
+    friend std::ostream& operator<<(std::ostream &os, const HNSW_Parameter &p) {
+        os << "[Benchmark] HNSW_Parameter: m = " << p.m << ", efConstruction = " << p.efConstruction << " ef = " << p.ef << std::endl;
         return os;
     }
 };
@@ -547,6 +609,7 @@ ivfsq8_generate_params(const milvus::knowhere::IndexType& index_type,
 
     return std::make_tuple(type_params, index_params);
 }
+
 auto
 ivfpq_generate_params(const milvus::knowhere::IndexType& index_type,
                       const milvus::knowhere::MetricType& metric_type,

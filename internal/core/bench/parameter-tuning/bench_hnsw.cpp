@@ -34,23 +34,19 @@ namespace knowhere = milvus::knowhere;
 //auto is_binary = false;
 //auto dataset = GenDataset(NB, metric_type, is_binary);
 
-class IVFSQ8_Fixture_SIFT1M : public benchmark::Fixture {
+class HNSW_Fixture_SIFT1M : public benchmark::Fixture {
 public:
-    const knowhere::IndexType index_type = knowhere::IndexEnum::INDEX_FAISS_IVFSQ8;
+    const knowhere::IndexType index_type = knowhere::IndexEnum::INDEX_HNSW;
     knowhere::MetricType metric_type = knowhere::Metric::L2;
     knowhere::VecIndexPtr index = knowhere::VecIndexFactory::GetInstance().CreateVecIndex(index_type);
-    IVFSQ8_Parameter para;
+    HNSW_Parameter para;
     knowhere::Config conf = knowhere::Config{
             {knowhere::meta::DIM, 128},
             {knowhere::meta::TOPK, 100},
-            {knowhere::IndexParams::nlist, -1},
-            {knowhere::IndexParams::nprobe, -1},
-//            {knowhere::IndexParams::nbits, -1},
+            {knowhere::IndexParams::M, -1},
+            {knowhere::IndexParams::efConstruction, -1},
+            {knowhere::IndexParams::ef, -1},
             {knowhere::Metric::TYPE, metric_type},
-            {knowhere::INDEX_FILE_SLICE_SIZE_IN_MEGABYTE, 4},
-#ifdef MILVUS_GPU_VERSION
-            {knowhere::meta::DEVICEID, DEVICEID},
-#endif
     };
 
     size_t d;
@@ -64,14 +60,14 @@ public:
     double train_time_min, train_time_max, train_time_avg;
     double add_points_time_min, add_points_time_max, add_points_time_avg;
 
-    IVFSQ8_Fixture_SIFT1M() {
-        std::cout << "[Benchmark] IVFSQ8_Fixture Benchmark Constructor only called once per fixture testcase hat uses it." << std::endl;
+    HNSW_Fixture_SIFT1M() {
+        std::cout << "[Benchmark] HNSW_Fixture Benchmark Constructor only called once per fixture testcase hat uses it." << std::endl;
         xq_dataset = load_queries(SIFT_DIM, nq);
         load_ground_truth(nq, k, gt, conf);
     }
 
-    ~IVFSQ8_Fixture_SIFT1M() {
-        std::cout << "[Benchmark] IVFPQ_Fixture Benchmark Destructor." << std::endl;
+    ~HNSW_Fixture_SIFT1M() {
+        std::cout << "[Benchmark] HNSW_Fixture Benchmark Destructor." << std::endl;
         ReleaseQuery(xq_dataset);
         delete[] gt;
     }
@@ -80,31 +76,29 @@ public:
         std::cout << "[Benchmark] SetUp." << std::endl;
         static bool needBuildIndex = true;
         if (para.IsInvalid()) {
-            para.Set(state.range(0), state.range(1));
-//            para.Set(state.range(0), state.range(2), state.range(1));
-            conf[knowhere::IndexParams::nlist] = para.Get_nlist();
-//            conf[knowhere::IndexParams::nbits] = para.Get_nbits();
-            conf[knowhere::IndexParams::nprobe] = para.Get_nprobe();
+            para.Set(state.range(0), state.range(1), state.range(2));
+            conf[knowhere::IndexParams::m] = para.Get_m();
+            conf[knowhere::IndexParams::efConstruction] = para.Get_efConstruction();
+            conf[knowhere::IndexParams::ef] = para.Get_ef();
         }
 
-        // Build Parameters: nlist, nbits
-        auto nlist = state.range(0);
-        state.counters["nlist"] = nlist;
-//        auto nbits = state.range(2);
-//        state.counters["nbits"] = nbits;
-        if (!para.CheckBuildPara(nlist)) {
-//        if (!para.CheckBuildPara(nlist, nbits)) {
-            std::cout << "[Benchmark] IVFSQ8_Fixture Benchmark Constructor only called once per fixture testcase hat uses it." << std::endl;
-            conf[knowhere::IndexParams::nlist] = para.Get_nlist();
-//            conf[knowhere::IndexParams::nbits] = para.Get_nbits();
+        // Build Parameters: m, Get_efConstruction
+        auto m = state.range(0);
+        state.counters["m"] = m;
+        auto efConstruction = state.range(1);
+        state.counters["efConstruction"] = efConstruction;
+        if (!para.CheckBuildPara(m, efConstruction)) {
+            std::cout << "[Benchmark] HNSW_Fixture Benchmark Constructor only called once per fixture testcase hat uses it." << std::endl;
+            conf[knowhere::IndexParams::m] = para.Get_m();
+            conf[knowhere::IndexParams::efConstruction] = para.Get_efConstruction();
             needBuildIndex = true;
         }
 
-        // Search Parameters: nprobe
-        auto nprobe = state.range(1);
-        state.counters["nprobe"] = nprobe;
-        conf[knowhere::IndexParams::nprobe] = para.Get_nprobe();
-        para.SetSearchPara(nprobe);
+        // Search Parameters: ef
+        auto ef = state.range(2);
+        state.counters["ef"] = ef;
+        conf[knowhere::IndexParams::ef] = para.Get_ef();
+        para.SetSearchPara(ef);
 
         // Build Index if necessary
         if (needBuildIndex) {
@@ -127,10 +121,10 @@ public:
     }
 };
 
-BENCHMARK_DEFINE_F(IVFSQ8_Fixture_SIFT1M, IVFSQ8_SIFT1M)(benchmark::State& state) {
+BENCHMARK_DEFINE_F(HNSW_Fixture_SIFT1M, HNSW_SIFT1M)(benchmark::State& state) {
     auto result = milvus::knowhere::DatasetPtr(nullptr);
-    conf[knowhere::IndexParams::nprobe] = para.Get_nprobe();
-    assert(para.Get_nprobe() == state.range(1));
+    conf[knowhere::IndexParams::ef] = para.Get_ef();
+    assert(para.Get_ef() == state.range(2));
     {
         std::cout << "[Benchmark] Perform a search on " << nq << " queries" << std::endl;
         std::cout << para;
@@ -161,28 +155,25 @@ BENCHMARK_DEFINE_F(IVFSQ8_Fixture_SIFT1M, IVFSQ8_SIFT1M)(benchmark::State& state
     ReleaseQueryResult(result);
 }
 
-// nlist \in [1024, 2048, 4096, 8192, ..., 65536]
-// nprobe \in [1, 2, 4, 8, ..., nlist]
-// nbits \in [4, 6, 8, 16]
-//static void
-//CustomArguments(benchmark::internal::Benchmark* b) {
-//    static std::array<int, 4> nbits_arr{4, 6, 8, 16};
-//    for (int nlist = 1024; nlist <= 65536; nlist *= 2) {
-//        for (auto nbits : nbits_arr) {
-//            for (int nprobe = 1; nprobe <= nlist; nprobe *= 2) {
-//                b->Args({nlist, nprobe, nbits});
+// m \in [4, ..., 64]
+// efConstruction \in [8, ..., 512]
+// ef \in [k, ..., 32768]
+static void
+CustomArguments(benchmark::internal::Benchmark* b) {
+//    for (int m = 4; m <= 64; m *= 2) {
+//        for (int efConstruction = 8; efConstruction <= 512; efConstruction *= 2) {
+//            for (int ef = 100 /*TODO: the TOPK*/; ef <= 32768; ef *= 2) {
+//                b->Args({m, efConstruction, ef});
 //            }
 //        }
 //    }
-//}
-static void
-CustomArguments(benchmark::internal::Benchmark* b) {
-    for (int nlist = 1024; nlist <= 65536; nlist *= 2) {
-        for (int nprobe = 1; nprobe <= nlist; nprobe *= 2) {
-            b->Args({nlist, nprobe});
+    for (int m = 16; m <= 64; m *= 2) {
+        for (int efConstruction = 200; efConstruction <= 512; efConstruction *= 2) {
+//            for (int ef = 100 /*TODO: the TOPK*/; ef <= 32768; ef *= 2) {
+                b->Args({m, efConstruction, 200});
+//            }
         }
     }
 }
 
-// ->Name("IVF_SQ8/L2/VectorFloat")
-BENCHMARK_REGISTER_F(IVFSQ8_Fixture_SIFT1M, IVFSQ8_SIFT1M)->Unit(benchmark::kMillisecond)->Apply(CustomArguments);
+BENCHMARK_REGISTER_F(HNSW_Fixture_SIFT1M, HNSW_SIFT1M)->Unit(benchmark::kMillisecond)->Apply(CustomArguments);

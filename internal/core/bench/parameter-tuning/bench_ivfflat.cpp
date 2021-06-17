@@ -65,11 +65,19 @@ class IVFFlat_Fixture_SIFT1M : public benchmark::Fixture {
 
     IVFFlat_Fixture_SIFT1M() {
         std::cout << "[Benchmark] IVFFlat_Fixture Benchmark Constructor only called once per fixture testcase hat uses it." << std::endl;
+        xq_dataset = load_queries(SIFT_DIM, nq);
+        load_ground_truth(nq, k, gt, conf);
+    }
+
+    ~IVFFlat_Fixture_SIFT1M() {
+        std::cout << "[Benchmark] IVFPQ_Fixture Benchmark Destructor." << std::endl;
+        ReleaseQuery(xq_dataset);
+        delete[] gt;
     }
 
     void SetUp(::benchmark::State& state) {
+        std::cout << "[Benchmark] SetUp." << std::endl;
         static bool needBuildIndex = true;
-        static bool needLoadQuery = true;
         if (para.IsInvalid()) {
             para.Set(state.range(0), state.range(1));
             conf[knowhere::IndexParams::nlist] = para.Get_nlist();
@@ -105,15 +113,11 @@ class IVFFlat_Fixture_SIFT1M : public benchmark::Fixture {
         state.counters["add points time avg"] = add_points_time_avg;
         index->UpdateIndexSize();
         state.counters["Index Size"] = index->Size();
-
-        if (needLoadQuery) {
-            xq_dataset = load_queries(d, nq);
-            load_ground_truth(nq, k, gt, conf);
-        }
-        needLoadQuery = false;
     }
 
-    void TearDown(const ::benchmark::State& state) {}
+    void TearDown(const ::benchmark::State& state) {
+        std::cout << "[Benchmark] TearDown." << std::endl;
+    }
 };
 
 BENCHMARK_DEFINE_F(IVFFlat_Fixture_SIFT1M, IVFFlat_SIFT1M)(benchmark::State& state) {
@@ -124,7 +128,8 @@ BENCHMARK_DEFINE_F(IVFFlat_Fixture_SIFT1M, IVFFlat_SIFT1M)(benchmark::State& sta
         std::cout << "[Benchmark] Perform a search on " << nq << " queries" << std::endl;
         std::cout << para;
         // Wash the cache
-        result = index->Query(xq_dataset, conf, nullptr);
+//        result = index->Query(xq_dataset, conf, nullptr);
+//        ReleaseQueryResult(result);
         for (auto _ : state) {
             result = index->Query(xq_dataset, conf, nullptr);
         }
@@ -145,8 +150,6 @@ BENCHMARK_DEFINE_F(IVFFlat_Fixture_SIFT1M, IVFFlat_SIFT1M)(benchmark::State& sta
         auto recall_100 = compute_recall(nq, k, result, gt, 100);
         state.counters["Recall@100"] = recall_100;
     }
-
-//    ReleaseQuery(xq_dataset);
     ReleaseQueryResult(result);
 }
 
@@ -155,7 +158,7 @@ BENCHMARK_DEFINE_F(IVFFlat_Fixture_SIFT1M, IVFFlat_SIFT1M)(benchmark::State& sta
 static void
 CustomArguments(benchmark::internal::Benchmark* b) {
     for (int nlist = 1024; nlist <= 65536; nlist *= 2) {
-        for (int nprobe = 1; nprobe <= nlist; nprobe *= 2) {
+        for (int nprobe = 1; nprobe <= 16; nprobe *= 2) {
             b->Args({nlist, nprobe});
         }
     }

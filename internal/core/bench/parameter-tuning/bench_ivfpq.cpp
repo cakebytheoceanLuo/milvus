@@ -65,13 +65,18 @@ public:
     double train_time_min, train_time_max, train_time_avg;
     double add_points_time_min, add_points_time_max, add_points_time_avg;
 
+    bool needBuildIndex = true;
+
     IVFPQ_Fixture_SIFT1M() {
         std::cout << "[Benchmark] IVFPQ_Fixture Benchmark Constructor only called once per fixture testcase hat uses it." << std::endl;
     }
 
+    ~IVFPQ_Fixture_SIFT1M() {
+        std::cout << "[Benchmark] IVFPQ_Fixture Benchmark Destructor." << std::endl;
+    }
+
     void SetUp(::benchmark::State& state) {
-        static bool needBuildIndex = true;
-        static bool needLoadQuery = true;
+        std::cout << "[Benchmark] SetUp." << std::endl;
         if (para.IsInvalid()) {
             para.Set(state.range(0), state.range(2), state.range(3), SIFT_DIM, state.range(1));
             conf[knowhere::IndexParams::nlist] = para.Get_nlist();
@@ -117,14 +122,15 @@ public:
         index->UpdateIndexSize();
         state.counters["Index Size (B)"] = index->Size();
 
-        if (needLoadQuery) {
-            xq_dataset = load_queries(d, nq);
-            load_ground_truth(nq, k, gt, conf);
-        }
-        needLoadQuery = false;
+        xq_dataset = load_queries(SIFT_DIM, nq);
+        load_ground_truth(nq, k, gt, conf);
     }
 
-    void TearDown(const ::benchmark::State& state) {}
+    void TearDown(const ::benchmark::State& state) {
+        std::cout << "[Benchmark] TearDown." << std::endl;
+        ReleaseQuery(xq_dataset);
+        delete[] gt;
+    }
 };
 
 BENCHMARK_DEFINE_F(IVFPQ_Fixture_SIFT1M, IVFPQ_SIFT1M)(benchmark::State& state) {
@@ -135,7 +141,8 @@ BENCHMARK_DEFINE_F(IVFPQ_Fixture_SIFT1M, IVFPQ_SIFT1M)(benchmark::State& state) 
         std::cout << "[Benchmark] Perform a search on " << nq << " queries" << std::endl;
         std::cout << para;
         // Wash the cache
-        result = index->Query(xq_dataset, conf, nullptr);
+//        result = index->Query(xq_dataset, conf, nullptr);
+//        ReleaseQueryResult(result);
         for (auto _ : state) {
             result = index->Query(xq_dataset, conf, nullptr);
         }
@@ -157,7 +164,6 @@ BENCHMARK_DEFINE_F(IVFPQ_Fixture_SIFT1M, IVFPQ_SIFT1M)(benchmark::State& state) 
         state.counters["Recall@100"] = recall_100;
     }
 
-//    ReleaseQuery(xq_dataset);
     ReleaseQueryResult(result);
 }
 
@@ -167,15 +173,24 @@ BENCHMARK_DEFINE_F(IVFPQ_Fixture_SIFT1M, IVFPQ_SIFT1M)(benchmark::State& state) 
 // m \in DIM % m == 0
 static void
 CustomArguments(benchmark::internal::Benchmark* b) {
-    for (int nlist = 1024; nlist <= 65536; nlist *= 2) {
-        for (int nbits = 1; nbits <= 16; nbits++) {
+    for (int nlist = 1024; nlist <= 2018; nlist *= 2) {
+        for (int nbits = 1; nbits <= 2; nbits++) {
             for (int m = 1; SIFT_DIM % m == 0; m++) {
-                for (int nprobe = 1; nprobe <= nlist; nprobe *= 2) {
-                    b->Args({nlist, nprobe, nbits, m});
-                }
+//                for (int nprobe = 1; nprobe <= nlist; nprobe *= 2) {
+                    b->Args({nlist, nlist, nbits, m});
+//                }
             }
         }
     }
+//    for (int nlist = 1024; nlist <= 65536; nlist *= 2) {
+//        for (int nbits = 1; nbits <= 16; nbits++) {
+//            for (int m = 1; SIFT_DIM % m == 0; m++) {
+//                for (int nprobe = 1; nprobe <= nlist; nprobe *= 2) {
+//                    b->Args({nlist, nprobe, nbits, m});
+//                }
+//            }
+//        }
+//    }
 }
 
 // ->Name("IVF_PQ/L2/VectorFloat")
