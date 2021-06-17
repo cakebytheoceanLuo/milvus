@@ -14,6 +14,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path"
 	"syscall"
@@ -21,88 +22,79 @@ import (
 	"github.com/milvus-io/milvus/cmd/distributed/roles"
 )
 
-func run(serverType, runtTimeDir string) error {
-	fileName := serverType + ".pid"
-	_, err := os.Stat(path.Join(runtTimeDir, fileName))
-	var fd *os.File
-	if os.IsNotExist(err) {
-		if fd, err = os.OpenFile(path.Join(runtTimeDir, fileName), os.O_CREATE|os.O_WRONLY, 0664); err != nil {
-			return err
-		}
-		defer func() {
-			_ = syscall.Close(int(fd.Fd()))
-			_ = os.Remove(path.Join(runtTimeDir, fileName))
-		}()
+const (
+	roleMaster       = "master"
+	roleQueryService = "queryservice"
+	roleIndexService = "indexservice"
+	roleDataService  = "dataservice"
+	roleProxyNode    = "proxynode"
+	roleQueryNode    = "querynode"
+	roleIndexNode    = "indexnode"
+	roleDataNode     = "datanode"
+	roleMixture      = "mixture"
+)
 
-		if err := syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			return err
-		}
-		_, _ = fd.WriteString(fmt.Sprintf("%d", os.Getpid()))
-
+func getPidFileName(service string, alias string) string {
+	var filename string
+	if len(alias) != 0 {
+		filename = fmt.Sprintf("%s-%s.pid", service, alias)
 	} else {
-		if fd, err = os.OpenFile(path.Join(runtTimeDir, fileName), os.O_WRONLY, 0664); err != nil {
-			return fmt.Errorf("service %s is running, error  = %w", serverType, err)
-		}
-		if err := syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			return fmt.Errorf("service %s is running, error = %w", serverType, err)
-		}
-		defer func() {
-			_ = syscall.Close(int(fd.Fd()))
-			_ = os.Remove(path.Join(runtTimeDir, fileName))
-		}()
-		fd.Truncate(0)
-		_, _ = fd.WriteString(fmt.Sprintf("%d", os.Getpid()))
+		filename = service + ".pid"
 	}
-
-	role := roles.MilvusRoles{}
-	switch serverType {
-	case "master":
-		role.EnableMaster = true
-	case "msgstream":
-		role.EnableMsgStreamService = true
-	case "proxyservice":
-		role.EnableProxyService = true
-	case "proxynode":
-		role.EnableProxyNode = true
-	case "queryservice":
-		role.EnableQueryService = true
-	case "querynode":
-		role.EnableQueryNode = true
-	case "dataservice":
-		role.EnableDataService = true
-	case "datanode":
-		role.EnableDataNode = true
-	case "indexservice":
-		role.EnableIndexService = true
-	case "indexnode":
-		role.EnableIndexNode = true
-	default:
-		return fmt.Errorf("unknown server type = %s", serverType)
-	}
-	role.Run(false)
-	return nil
+	return filename
 }
 
-func stop(serverType, runtimeDir string) error {
-	fileName := serverType + ".pid"
-	var err error
-	var fd *os.File
-	if fd, err = os.OpenFile(path.Join(runtimeDir, fileName), os.O_RDONLY, 0664); err != nil {
+func createPidFile(filename string, runtimeDir string) (*os.File, error) {
+	fileFullName := path.Join(runtimeDir, filename)
+
+	fd, err := os.OpenFile(fileFullName, os.O_CREATE|os.O_RDWR, 0664)
+	if err != nil {
+		return nil, fmt.Errorf("file %s is locked, error = %w", filename, err)
+	}
+	fmt.Println("open pid file:", fileFullName)
+
+	err = syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		return nil, fmt.Errorf("file %s is locked, error = %w", filename, err)
+	}
+	fmt.Println("lock pid file:", fileFullName)
+
+	fd.Truncate(0)
+	_, err = fd.WriteString(fmt.Sprintf("%d", os.Getpid()))
+	if err != nil {
+		return nil, fmt.Errorf("file %s write fail, error = %w", filename, err)
+	}
+
+	return fd, nil
+}
+
+func closePidFile(fd *os.File) {
+	fd.Close()
+}
+
+func removePidFile(fd *os.File) {
+	syscall.Close(int(fd.Fd()))
+	os.Remove(fd.Name())
+}
+
+func stopPid(filename string, runtimeDir string) error {
+	var pid int
+
+	fd, err := os.OpenFile(path.Join(runtimeDir, filename), os.O_RDONLY, 0664)
+	if err != nil {
 		return err
 	}
-	defer func() {
-		_ = fd.Close()
-	}()
-	var pid int
+	defer closePidFile(fd)
+
 	_, err = fmt.Fscanf(fd, "%d", &pid)
 	if err != nil {
 		return err
 	}
-	p, err := os.FindProcess(pid)
+	process, err := os.FindProcess(pid)
 	if err != nil {
 		return err
 	}
-	err = p.Signal(syscall.SIGTERM)
+	err = process.Signal(syscall.SIGTERM)
 	if err != nil {
 		return err
 	}
@@ -119,54 +111,92 @@ func makeRuntimeDir(dir string) error {
 		return nil
 	}
 	if !st.IsDir() {
-		return fmt.Errorf("%s is exist, but is not directory", dir)
+		return fmt.Errorf("%s is not directory", dir)
 	}
-	tmpFile := path.Join(dir, "testTmp")
-
-	var fd *os.File
-
-	if fd, err = os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY, 0664); err != nil {
+	tmpFile, err := ioutil.TempFile(dir, "tmp")
+	if err != nil {
 		return err
 	}
-	syscall.Close(int(fd.Fd()))
-	os.Remove(tmpFile)
+	fileName := tmpFile.Name()
+	tmpFile.Close()
+	os.Remove(fileName)
 	return nil
 }
 
 func main() {
 	if len(os.Args) < 3 {
-		_, _ = fmt.Fprint(os.Stderr, "usage: milvus-distributed [command] [server type] [flags]\n")
+		_, _ = fmt.Fprint(os.Stderr, "usage: milvus [command] [server type] [flags]\n")
 		return
 	}
 	command := os.Args[1]
 	serverType := os.Args[2]
 	flags := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
-	//flags.BoolVar()
+
+	var svrAlias string
+	flags.StringVar(&svrAlias, "alias", "", "set alias")
+
+	var enableMaster, enableQueryService, enableIndexService, enableDataService bool
+	flags.BoolVar(&enableMaster, roleMaster, false, "enable master")
+	flags.BoolVar(&enableQueryService, roleQueryService, false, "enable query service")
+	flags.BoolVar(&enableIndexService, roleIndexService, false, "enable index service")
+	flags.BoolVar(&enableDataService, roleDataService, false, "enable data service")
 
 	if err := flags.Parse(os.Args[3:]); err != nil {
 		os.Exit(-1)
 	}
 
-	runtimeDir := "/run/milvus-distributed"
+	role := roles.MilvusRoles{}
+	switch serverType {
+	case roleMaster:
+		role.EnableMaster = true
+	case roleProxyNode:
+		role.EnableProxyNode = true
+	case roleQueryService:
+		role.EnableQueryService = true
+	case roleQueryNode:
+		role.EnableQueryNode = true
+	case roleDataService:
+		role.EnableDataService = true
+	case roleDataNode:
+		role.EnableDataNode = true
+	case roleIndexService:
+		role.EnableIndexService = true
+	case roleIndexNode:
+		role.EnableIndexNode = true
+	case roleMixture:
+		role.EnableMaster = enableMaster
+		role.EnableQueryService = enableQueryService
+		role.EnableDataService = enableDataService
+		role.EnableIndexService = enableIndexService
+	default:
+		fmt.Fprintf(os.Stderr, "Unknown server type = %s\n", serverType)
+		os.Exit(-1)
+	}
+
+	runtimeDir := "/run/milvus"
 	if err := makeRuntimeDir(runtimeDir); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "set runtime dir at : %s failed, set it to /tmp/milvus-distributed directory\n", runtimeDir)
-		runtimeDir = "/tmp/milvus-distributed"
+		fmt.Fprintf(os.Stderr, "Set runtime dir at %s failed, set it to /tmp/milvus directory\n", runtimeDir)
+		runtimeDir = "/tmp/milvus"
 		if err = makeRuntimeDir(runtimeDir); err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "create runtime director at : %s failed\n", runtimeDir)
+			fmt.Fprintf(os.Stderr, "Create runtime directory at %s failed\n", runtimeDir)
 			os.Exit(-1)
 		}
 	}
 
+	filename := getPidFileName(serverType, svrAlias)
 	switch command {
 	case "run":
-		if err := run(serverType, runtimeDir); err != nil {
+		fd, err := createPidFile(filename, runtimeDir)
+		if err != nil {
 			panic(err)
 		}
+		defer removePidFile(fd)
+		role.Run(false)
 	case "stop":
-		if err := stop(serverType, runtimeDir); err != nil {
+		if err := stopPid(filename, runtimeDir); err != nil {
 			panic(err)
 		}
 	default:
-		_, _ = fmt.Fprintf(os.Stderr, "unknown command : %s", command)
+		fmt.Fprintf(os.Stderr, "unknown command : %s", command)
 	}
 }

@@ -93,8 +93,7 @@ service MasterService {
 
     rpc AllocTimestamp(AllocTimestampRequest) returns (AllocTimestampResponse) {}
     rpc AllocID(AllocIDRequest) returns (AllocIDResponse) {}
-
-    rpc GetDdChannel(internal.GetDdChannelRequest) returns (milvus.StringResponse) {}
+    rpc UpdateChannelTimeTick(internal.ChannelTimeTickMsg) returns (common.Status) {}
 }
 
 message AllocTimestampRequest {

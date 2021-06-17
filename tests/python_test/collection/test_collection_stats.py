@@ -195,7 +195,7 @@ class TestGetCollectionStats:
         expected: status ok, vectors added to partition
         '''
         connect.create_partition(collection, default_tag)
-        ids = connect.insert(collection, default_entities, partition_tag=default_tag)
+        ids = connect.insert(collection, default_entities, partition_name=default_tag)
         assert len(ids) == default_nb
         connect.flush([collection])
         stats = connect.get_collection_stats(collection)
@@ -211,11 +211,11 @@ class TestGetCollectionStats:
         new_tag = "new_tag"
         connect.create_partition(collection, default_tag)
         connect.create_partition(collection, new_tag)
-        connect.insert(collection, default_entities, partition_tag=default_tag)
+        connect.insert(collection, default_entities, partition_name=default_tag)
         connect.flush([collection])
         stats = connect.get_collection_stats(collection)
         assert stats[row_count] == default_nb
-        connect.insert(collection, default_entities, partition_tag=new_tag)
+        connect.insert(collection, default_entities, partition_name=new_tag)
         connect.flush([collection])
         stats = connect.get_collection_stats(collection)
         assert stats[row_count] == default_nb * 2
@@ -251,7 +251,7 @@ class TestGetCollectionStats:
         entities = gen_entities(insert_count)
         connect.create_partition(collection, default_tag)
         connect.create_partition(collection, new_tag)
-        connect.insert(collection, entities, partition_tag=default_tag)
+        connect.insert(collection, entities, partition_name=default_tag)
         connect.flush([collection])
         stats = connect.get_collection_stats(collection)
         assert stats[row_count] == insert_count
@@ -269,7 +269,7 @@ class TestGetCollectionStats:
         connect.create_partition(collection, default_tag)
         connect.create_partition(collection, new_tag)
         connect.insert(collection, entities)
-        connect.insert(collection, entities, partition_tag=default_tag)
+        connect.insert(collection, entities, partition_name=default_tag)
         connect.flush([collection])
         stats = connect.get_collection_stats(collection)
         assert stats[row_count] == insert_count*2
@@ -285,8 +285,8 @@ class TestGetCollectionStats:
         entities = gen_entities(insert_count)
         connect.create_partition(collection, default_tag)
         connect.create_partition(collection, new_tag)
-        connect.insert(collection, entities, partition_tag=default_tag)
-        connect.insert(collection, entities, partition_tag=new_tag)
+        connect.insert(collection, entities, partition_name=default_tag)
+        connect.insert(collection, entities, partition_name=new_tag)
         connect.flush([collection])
         stats = connect.get_collection_stats(collection)
         assert stats[row_count] == insert_count*2
@@ -395,10 +395,12 @@ class TestGetCollectionStats:
         for i in range(collection_num):
             stats = connect.get_collection_stats(collection_list[i])
             assert stats[row_count] == default_nb
-            index = connect.describe_index(collection_list[i], default_float_vec_field_name)
+            index = connect.describe_index(collection_list[i], "")
             if i % 2:
+                create_target_index(index_1, default_float_vec_field_name)
                 assert index == index_1
             else:
+                create_target_index(index_2, default_float_vec_field_name)
                 assert index == index_2
                 # break
             connect.drop_collection(collection_list[i])

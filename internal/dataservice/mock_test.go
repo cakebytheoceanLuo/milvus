@@ -16,6 +16,7 @@ import (
 	"time"
 
 	memkv "github.com/milvus-io/milvus/internal/kv/mem"
+	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/tsoutil"
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -26,7 +27,7 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 )
 
-func newMemoryMeta(allocator allocatorInterface) (*meta, error) {
+func newMemoryMeta(allocator allocator) (*meta, error) {
 	memoryKV := memkv.NewMemoryKV()
 	return newMeta(memoryKV)
 }
@@ -66,13 +67,15 @@ func newTestSchema() *schemapb.CollectionSchema {
 type mockDataNodeClient struct {
 	id    int64
 	state internalpb.StateCode
+	ch    chan interface{}
 }
 
-func newMockDataNodeClient(id int64) *mockDataNodeClient {
+func newMockDataNodeClient(id int64, ch chan interface{}) (*mockDataNodeClient, error) {
 	return &mockDataNodeClient{
 		id:    id,
 		state: internalpb.StateCode_Initializing,
-	}
+		ch:    ch,
+	}, nil
 }
 
 func (c *mockDataNodeClient) Init() error {
@@ -81,6 +84,10 @@ func (c *mockDataNodeClient) Init() error {
 
 func (c *mockDataNodeClient) Start() error {
 	c.state = internalpb.StateCode_Healthy
+	return nil
+}
+
+func (c *mockDataNodeClient) Register() error {
 	return nil
 }
 
@@ -102,6 +109,9 @@ func (c *mockDataNodeClient) WatchDmChannels(ctx context.Context, in *datapb.Wat
 }
 
 func (c *mockDataNodeClient) FlushSegments(ctx context.Context, in *datapb.FlushSegmentsRequest) (*commonpb.Status, error) {
+	if c.ch != nil {
+		c.ch <- in
+	}
 	return &commonpb.Status{ErrorCode: commonpb.ErrorCode_Success}, nil
 }
 
@@ -118,6 +128,10 @@ func newMockMasterService() *mockMasterService {
 	return &mockMasterService{}
 }
 
+func (m *mockMasterService) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
+	return nil, nil
+}
+
 func (m *mockMasterService) Init() error {
 	return nil
 }
@@ -127,6 +141,10 @@ func (m *mockMasterService) Start() error {
 }
 
 func (m *mockMasterService) Stop() error {
+	return nil
+}
+
+func (m *mockMasterService) Register() error {
 	return nil
 }
 
@@ -166,11 +184,14 @@ func (m *mockMasterService) HasCollection(ctx context.Context, req *milvuspb.Has
 func (m *mockMasterService) DescribeCollection(ctx context.Context, req *milvuspb.DescribeCollectionRequest) (*milvuspb.DescribeCollectionResponse, error) {
 	return &milvuspb.DescribeCollectionResponse{
 		Status: &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			ErrorCode: commonpb.ErrorCode_Success,
 			Reason:    "",
 		},
-		Schema:       nil,
-		CollectionID: 0,
+		Schema: &schemapb.CollectionSchema{
+			Name: "test",
+		},
+		CollectionID:        1314,
+		VirtualChannelNames: []string{"vchan1"},
 	}, nil
 }
 
@@ -180,7 +201,7 @@ func (m *mockMasterService) ShowCollections(ctx context.Context, req *milvuspb.S
 			ErrorCode: commonpb.ErrorCode_Success,
 			Reason:    "",
 		},
-		CollectionNames: []string{},
+		CollectionNames: []string{"test"},
 	}, nil
 }
 
@@ -197,7 +218,14 @@ func (m *mockMasterService) HasPartition(ctx context.Context, req *milvuspb.HasP
 }
 
 func (m *mockMasterService) ShowPartitions(ctx context.Context, req *milvuspb.ShowPartitionsRequest) (*milvuspb.ShowPartitionsResponse, error) {
-	panic("not implemented") // TODO: Implement
+	return &milvuspb.ShowPartitionsResponse{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_Success,
+			Reason:    "",
+		},
+		PartitionNames: []string{"_default"},
+		PartitionIDs:   []int64{0},
+	}, nil
 }
 
 //index builder service
@@ -257,4 +285,39 @@ func (m *mockMasterService) GetDdChannel(ctx context.Context) (*milvuspb.StringR
 		},
 		Value: "ddchannel",
 	}, nil
+}
+
+func (m *mockMasterService) UpdateChannelTimeTick(ctx context.Context, req *internalpb.ChannelTimeTickMsg) (*commonpb.Status, error) {
+	panic("not implemented") // TODO: Implement
+}
+
+type mockStartupPolicy struct {
+}
+
+func newMockStartupPolicy() clusterStartupPolicy {
+	return &mockStartupPolicy{}
+}
+
+func (p *mockStartupPolicy) apply(oldCluster map[string]*datapb.DataNodeInfo, delta *clusterDeltaChange, buffer []*datapb.ChannelStatus) ([]*datapb.DataNodeInfo, []*datapb.ChannelStatus) {
+	return nil, nil
+}
+
+type mockSessionManager struct {
+	ch chan interface{}
+}
+
+func newMockSessionManager(ch chan interface{}) sessionManager {
+	return &mockSessionManager{
+		ch: ch,
+	}
+}
+
+func (m *mockSessionManager) getOrCreateSession(addr string) (types.DataNode, error) {
+	return newMockDataNodeClient(0, m.ch)
+}
+
+func (m *mockSessionManager) releaseSession(addr string) {
+
+}
+func (m *mockSessionManager) release() {
 }

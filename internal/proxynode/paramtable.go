@@ -12,7 +12,6 @@
 package proxynode
 
 import (
-	"bytes"
 	"fmt"
 	"path"
 	"strconv"
@@ -20,12 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/spf13/cast"
-	"github.com/spf13/viper"
-	"go.uber.org/zap"
-
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/util/paramtable"
 )
 
@@ -42,24 +36,26 @@ type ParamTable struct {
 	IP             string
 	NetworkAddress string
 
+	EtcdEndpoints []string
+	MetaRootPath  string
 	MasterAddress string
 	PulsarAddress string
 
-	QueryNodeNum              int
-	QueryNodeIDList           []UniqueID
-	ProxyID                   UniqueID
-	TimeTickInterval          time.Duration
-	K2SChannelNames           []string
-	SearchChannelNames        []string
-	SearchResultChannelNames  []string
-	ProxySubName              string
-	ProxyTimeTickChannelNames []string
-	MsgStreamTimeTickBufSize  int64
-	MaxNameLength             int64
-	MaxFieldNum               int64
-	MaxDimension              int64
-	DefaultPartitionName      string
-	DefaultIndexName          string
+	ProxyID                    UniqueID
+	TimeTickInterval           time.Duration
+	K2SChannelNames            []string
+	SearchChannelNames         []string
+	SearchResultChannelNames   []string
+	RetrieveChannelNames       []string
+	RetrieveResultChannelNames []string
+	ProxySubName               string
+	ProxyTimeTickChannelNames  []string
+	MsgStreamTimeTickBufSize   int64
+	MaxNameLength              int64
+	MaxFieldNum                int64
+	MaxDimension               int64
+	DefaultPartitionName       string
+	DefaultIndexName           string
 
 	PulsarMaxMessageSize int
 	Log                  log.Config
@@ -69,77 +65,22 @@ type ParamTable struct {
 var Params ParamTable
 var once sync.Once
 
-func (pt *ParamTable) LoadConfigFromInitParams(initParams *internalpb.InitParams) error {
-	pt.ProxyID = initParams.NodeID
-
-	config := viper.New()
-	config.SetConfigType("yaml")
-	save := func() error {
-		for _, key := range config.AllKeys() {
-			val := config.Get(key)
-			str, err := cast.ToStringE(val)
-			if err != nil {
-				switch val := val.(type) {
-				case []interface{}:
-					str = str[:0]
-					for _, v := range val {
-						ss, err := cast.ToStringE(v)
-						if err != nil {
-							log.Warn("proxynode", zap.String("error", err.Error()))
-						}
-						if len(str) == 0 {
-							str = ss
-						} else {
-							str = str + "," + ss
-						}
-					}
-
-				default:
-					log.Debug("proxynode", zap.String("error", "Undefined config type, key="+key))
-				}
-			}
-			err = pt.Save(key, str)
-			if err != nil {
-				panic(err)
-			}
-		}
-		return nil
-	}
-
-	for _, pair := range initParams.StartParams {
-		if strings.HasPrefix(pair.Key, StartParamsKey) {
-			err := config.ReadConfig(bytes.NewBuffer([]byte(pair.Value)))
-			if err != nil {
-				return err
-			}
-			err = save()
-			if err != nil {
-				return err
-			}
-		}
-	}
-
-	pt.initParams()
-
-	return nil
-}
-
 func (pt *ParamTable) Init() {
 	once.Do(func() {
 		pt.BaseTable.Init()
-		pt.initLogCfg()
-		// err := pt.LoadYaml("advanced/proxy_node.yaml")
-		// if err != nil {
-		// 	panic(err)
-		// }
-		// pt.initParams()
+		err := pt.LoadYaml("advanced/proxy_node.yaml")
+		if err != nil {
+			panic(err)
+		}
+		pt.initParams()
 	})
 }
 
 func (pt *ParamTable) initParams() {
+	pt.initLogCfg()
+	pt.initEtcdEndpoints()
+	pt.initMetaRootPath()
 	pt.initPulsarAddress()
-	pt.initQueryNodeIDList()
-	pt.initQueryNodeNum()
 	pt.initTimeTickInterval()
 	pt.initK2SChannelNames()
 	pt.initProxySubName()
@@ -161,28 +102,6 @@ func (pt *ParamTable) initPulsarAddress() {
 		panic(err)
 	}
 	pt.PulsarAddress = ret
-}
-
-func (pt *ParamTable) initQueryNodeNum() {
-	pt.QueryNodeNum = len(pt.QueryNodeIDList)
-}
-
-func (pt *ParamTable) initQueryNodeIDList() []UniqueID {
-	queryNodeIDStr, err := pt.Load("nodeID.queryNodeIDList")
-	if err != nil {
-		panic(err)
-	}
-	var ret []UniqueID
-	queryNodeIDs := strings.Split(queryNodeIDStr, ",")
-	for _, i := range queryNodeIDs {
-		v, err := strconv.Atoi(i)
-		if err != nil {
-			log.Error("proxynode", zap.String("load proxynode id list error", err.Error()))
-		}
-		ret = append(ret, UniqueID(v))
-	}
-	pt.QueryNodeIDList = ret
-	return ret
 }
 
 func (pt *ParamTable) initTimeTickInterval() {
@@ -361,4 +280,24 @@ func (pt *ParamTable) initLogCfg() {
 
 func (pt *ParamTable) initRoleName() {
 	pt.RoleName = fmt.Sprintf("%s-%d", "ProxyNode", pt.ProxyID)
+}
+
+func (pt *ParamTable) initEtcdEndpoints() {
+	endpoints, err := pt.Load("_EtcdEndpoints")
+	if err != nil {
+		panic(err)
+	}
+	pt.EtcdEndpoints = strings.Split(endpoints, ",")
+}
+
+func (pt *ParamTable) initMetaRootPath() {
+	rootPath, err := pt.Load("etcd.rootPath")
+	if err != nil {
+		panic(err)
+	}
+	subPath, err := pt.Load("etcd.metaSubPath")
+	if err != nil {
+		panic(err)
+	}
+	pt.MetaRootPath = path.Join(rootPath, subPath)
 }

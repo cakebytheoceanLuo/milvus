@@ -21,6 +21,7 @@ import (
 
 	"go.uber.org/zap"
 
+	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"github.com/milvus-io/milvus/internal/indexservice"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -30,8 +31,6 @@ import (
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/trace"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
-	otgrpc "github.com/opentracing-contrib/go-grpc"
-	"github.com/opentracing/opentracing-go"
 	"google.golang.org/grpc"
 )
 
@@ -66,13 +65,19 @@ func (s *Server) Run() error {
 func (s *Server) init() error {
 	Params.Init()
 	indexservice.Params.Init()
+	indexservice.Params.Address = Params.ServiceAddress
+	indexservice.Params.Port = Params.ServicePort
 
 	closer := trace.InitTracing("index_service")
 	s.closer = closer
 
+	if err := s.indexservice.Register(); err != nil {
+		return err
+	}
+
 	s.loopWg.Add(1)
 	go s.startGrpcLoop(Params.ServicePort)
-	// wait for grpc indexservice loop start
+	// wait for grpc IndexService loop start
 	if err := <-s.grpcErrChan; err != nil {
 		return err
 	}
@@ -143,17 +148,14 @@ func (s *Server) GetIndexFilePaths(ctx context.Context, req *indexpb.GetIndexFil
 	return s.indexservice.GetIndexFilePaths(ctx, req)
 }
 
-func (s *Server) NotifyBuildIndex(ctx context.Context, nty *indexpb.NotifyBuildIndexRequest) (*commonpb.Status, error) {
-	return s.indexservice.NotifyBuildIndex(ctx, nty)
-}
 func (s *Server) startGrpcLoop(grpcPort int) {
 
 	defer s.loopWg.Done()
 
-	log.Debug("indexservice", zap.Int("network port", grpcPort))
+	log.Debug("IndexService", zap.Int("network port", grpcPort))
 	lis, err := net.Listen("tcp", ":"+strconv.Itoa(grpcPort))
 	if err != nil {
-		log.Warn("indexservice", zap.String("GrpcServer:failed to listen", err.Error()))
+		log.Warn("IndexService", zap.String("GrpcServer:failed to listen", err.Error()))
 		s.grpcErrChan <- err
 		return
 	}
@@ -161,20 +163,21 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 	ctx, cancel := context.WithCancel(s.loopCtx)
 	defer cancel()
 
-	tracer := opentracing.GlobalTracer()
+	opts := trace.GetInterceptorOpts()
 	s.grpcServer = grpc.NewServer(
 		grpc.MaxRecvMsgSize(math.MaxInt32),
 		grpc.MaxSendMsgSize(math.MaxInt32),
 		grpc.UnaryInterceptor(
-			otgrpc.OpenTracingServerInterceptor(tracer)),
+			grpc_opentracing.UnaryServerInterceptor(opts...)),
 		grpc.StreamInterceptor(
-			otgrpc.OpenTracingStreamServerInterceptor(tracer)))
+			grpc_opentracing.StreamServerInterceptor(opts...)))
 	indexpb.RegisterIndexServiceServer(s.grpcServer, s)
 
 	go funcutil.CheckGrpcReady(ctx, s.grpcErrChan)
 	if err := s.grpcServer.Serve(lis); err != nil {
 		s.grpcErrChan <- err
 	}
+	log.Debug("IndexService grpcServer loop exit")
 }
 
 func NewServer(ctx context.Context) (*Server, error) {

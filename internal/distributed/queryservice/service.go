@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	dsc "github.com/milvus-io/milvus/internal/distributed/dataservice/client"
 	msc "github.com/milvus-io/milvus/internal/distributed/masterservice/client"
 	"github.com/milvus-io/milvus/internal/log"
@@ -28,8 +29,6 @@ import (
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/trace"
-	otgrpc "github.com/opentracing-contrib/go-grpc"
-	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
@@ -79,7 +78,7 @@ func (s *Server) Run() error {
 	if err := s.init(); err != nil {
 		return err
 	}
-	log.Debug("queryservice init done ...")
+	log.Debug("QueryService init done ...")
 
 	if err := s.start(); err != nil {
 		return err
@@ -88,12 +87,16 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) init() error {
-	ctx := context.Background()
 	Params.Init()
 	qs.Params.Init()
+	qs.Params.Port = Params.Port
 
 	closer := trace.InitTracing("query_service")
 	s.closer = closer
+
+	if err := s.queryservice.Register(); err != nil {
+		return err
+	}
 
 	s.wg.Add(1)
 	go s.startGrpcLoop(Params.Port)
@@ -103,53 +106,60 @@ func (s *Server) init() error {
 	}
 
 	// --- Master Server Client ---
-	log.Debug("Master service", zap.String("address", Params.MasterAddress))
-	log.Debug("Init master service client ...")
-
-	masterService, err := msc.NewClient(Params.MasterAddress, 20*time.Second)
-
+	log.Debug("QueryService try to new MasterService client", zap.Any("MasterServiceAddress", Params.MasterAddress))
+	masterService, err := msc.NewClient(s.loopCtx, qs.Params.MetaRootPath, qs.Params.EtcdEndpoints, 3*time.Second)
 	if err != nil {
+		log.Debug("QueryService try to new MasterService client failed", zap.Error(err))
 		panic(err)
 	}
 
 	if err = masterService.Init(); err != nil {
+		log.Debug("QueryService MasterServiceClient Init failed", zap.Error(err))
 		panic(err)
 	}
 
 	if err = masterService.Start(); err != nil {
+		log.Debug("QueryService MasterServiceClient Start failed", zap.Error(err))
 		panic(err)
 	}
 	// wait for master init or healthy
-	err = funcutil.WaitForComponentInitOrHealthy(ctx, masterService, "MasterService", 1000000, time.Millisecond*200)
+	log.Debug("QueryService try to wait for MasterService ready")
+	err = funcutil.WaitForComponentInitOrHealthy(s.loopCtx, masterService, "MasterService", 1000000, time.Millisecond*200)
 	if err != nil {
+		log.Debug("QueryService wait for MasterService ready failed", zap.Error(err))
 		panic(err)
 	}
 
 	if err := s.SetMasterService(masterService); err != nil {
 		panic(err)
 	}
+	log.Debug("QueryService report MasterService ready")
 
 	// --- Data service client ---
-	log.Debug("DataService", zap.String("Address", Params.DataServiceAddress))
-	log.Debug("QueryService Init data service client ...")
+	log.Debug("QueryService try to new DataService client", zap.Any("DataServiceAddress", Params.DataServiceAddress))
 
-	dataService := dsc.NewClient(Params.DataServiceAddress)
+	dataService := dsc.NewClient(qs.Params.MetaRootPath, qs.Params.EtcdEndpoints, 3*time.Second)
 	if err = dataService.Init(); err != nil {
+		log.Debug("QueryService DataServiceClient Init failed", zap.Error(err))
 		panic(err)
 	}
 	if err = dataService.Start(); err != nil {
+		log.Debug("QueryService DataServiceClient Start failed", zap.Error(err))
 		panic(err)
 	}
-	err = funcutil.WaitForComponentInitOrHealthy(ctx, dataService, "DataService", 1000000, time.Millisecond*200)
+	log.Debug("QueryService try to wait for DataService ready")
+	err = funcutil.WaitForComponentInitOrHealthy(s.loopCtx, dataService, "DataService", 1000000, time.Millisecond*200)
 	if err != nil {
+		log.Debug("QueryService wait for DataService ready failed", zap.Error(err))
 		panic(err)
 	}
 	if err := s.SetDataService(dataService); err != nil {
 		panic(err)
 	}
+	log.Debug("QueryService report DataService ready")
 
 	s.queryservice.UpdateStateCode(internalpb.StateCode_Initializing)
-
+	log.Debug("QueryService", zap.Any("State", internalpb.StateCode_Initializing))
 	if err := s.queryservice.Init(); err != nil {
 		return err
 	}
@@ -171,14 +181,14 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 	ctx, cancel := context.WithCancel(s.loopCtx)
 	defer cancel()
 
-	tracer := opentracing.GlobalTracer()
+	opts := trace.GetInterceptorOpts()
 	s.grpcServer = grpc.NewServer(
 		grpc.MaxRecvMsgSize(math.MaxInt32),
 		grpc.MaxSendMsgSize(math.MaxInt32),
 		grpc.UnaryInterceptor(
-			otgrpc.OpenTracingServerInterceptor(tracer)),
+			grpc_opentracing.UnaryServerInterceptor(opts...)),
 		grpc.StreamInterceptor(
-			otgrpc.OpenTracingStreamServerInterceptor(tracer)))
+			grpc_opentracing.StreamServerInterceptor(opts...)))
 	querypb.RegisterQueryServiceServer(s.grpcServer, s)
 
 	go funcutil.CheckGrpcReady(ctx, s.grpcErrChan)
@@ -260,7 +270,7 @@ func (s *Server) ReleasePartitions(ctx context.Context, req *querypb.ReleasePart
 }
 
 func (s *Server) CreateQueryChannel(ctx context.Context, req *querypb.CreateQueryChannelRequest) (*querypb.CreateQueryChannelResponse, error) {
-	return s.queryservice.CreateQueryChannel(ctx)
+	return s.queryservice.CreateQueryChannel(ctx, req)
 }
 
 func (s *Server) GetSegmentInfo(ctx context.Context, req *querypb.GetSegmentInfoRequest) (*querypb.GetSegmentInfoResponse, error) {

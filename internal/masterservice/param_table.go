@@ -12,9 +12,9 @@
 package masterservice
 
 import (
-	"fmt"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/milvus-io/milvus/internal/log"
@@ -27,25 +27,25 @@ var once sync.Once
 type ParamTable struct {
 	paramtable.BaseTable
 
-	NodeID uint64
+	Address string
+	Port    int
 
 	PulsarAddress             string
-	EtcdAddress               string
+	EtcdEndpoints             []string
 	MetaRootPath              string
 	KvRootPath                string
-	ProxyTimeTickChannel      string //get from proxy client
 	MsgChannelSubName         string
 	TimeTickChannel           string
-	DdChannel                 string
 	StatisticsChannel         string
-	DataServiceSegmentChannel string // get from data service, data service create segment, or data node flush segment
+	DataServiceSegmentChannel string // data service create segment, or data node flush segment
 
 	MaxPartitionNum             int64
 	DefaultPartitionName        string
 	DefaultIndexName            string
 	MinSegmentSizeToEnableIndex int64
 
-	Timeout int
+	Timeout          int
+	TimeTickInterval int
 
 	Log log.Config
 
@@ -61,17 +61,15 @@ func (p *ParamTable) Init() {
 			panic(err)
 		}
 
-		p.initNodeID()
-
 		p.initPulsarAddress()
-		p.initEtcdAddress()
+		p.initEtcdEndpoints()
 		p.initMetaRootPath()
 		p.initKvRootPath()
 
 		p.initMsgChannelSubName()
 		p.initTimeTickChannel()
-		p.initDdChannelName()
 		p.initStatisticsChannelName()
+		p.initSegmentInfoChannelName()
 
 		p.initMaxPartitionNum()
 		p.initMinSegmentSizeToEnableIndex()
@@ -79,14 +77,11 @@ func (p *ParamTable) Init() {
 		p.initDefaultIndexName()
 
 		p.initTimeout()
+		p.initTimeTickInterval()
 
 		p.initLogCfg()
 		p.initRoleName()
 	})
-}
-
-func (p *ParamTable) initNodeID() {
-	p.NodeID = uint64(p.ParseInt64("master.nodeID"))
 }
 
 func (p *ParamTable) initPulsarAddress() {
@@ -97,12 +92,12 @@ func (p *ParamTable) initPulsarAddress() {
 	p.PulsarAddress = addr
 }
 
-func (p *ParamTable) initEtcdAddress() {
-	addr, err := p.Load("_EtcdAddress")
+func (p *ParamTable) initEtcdEndpoints() {
+	endpoints, err := p.Load("_EtcdEndpoints")
 	if err != nil {
 		panic(err)
 	}
-	p.EtcdAddress = addr
+	p.EtcdEndpoints = strings.Split(endpoints, ",")
 }
 
 func (p *ParamTable) initMetaRootPath() {
@@ -145,20 +140,20 @@ func (p *ParamTable) initTimeTickChannel() {
 	p.TimeTickChannel = channel
 }
 
-func (p *ParamTable) initDdChannelName() {
-	channel, err := p.Load("msgChannel.chanNamePrefix.dataDefinition")
-	if err != nil {
-		panic(err)
-	}
-	p.DdChannel = channel
-}
-
 func (p *ParamTable) initStatisticsChannelName() {
 	channel, err := p.Load("msgChannel.chanNamePrefix.masterStatistics")
 	if err != nil {
 		panic(err)
 	}
 	p.StatisticsChannel = channel
+}
+
+func (p *ParamTable) initSegmentInfoChannelName() {
+	channel, err := p.Load("msgChannel.chanNamePrefix.dataServiceSegmentInfo")
+	if err != nil {
+		panic(err)
+	}
+	p.DataServiceSegmentChannel = channel
 }
 
 func (p *ParamTable) initMaxPartitionNum() {
@@ -187,6 +182,10 @@ func (p *ParamTable) initDefaultIndexName() {
 
 func (p *ParamTable) initTimeout() {
 	p.Timeout = p.ParseInt("master.timeout")
+}
+
+func (p *ParamTable) initTimeTickInterval() {
+	p.TimeTickInterval = p.ParseInt("master.timeTickInterval")
 }
 
 func (p *ParamTable) initLogCfg() {
@@ -218,12 +217,12 @@ func (p *ParamTable) initLogCfg() {
 		panic(err)
 	}
 	if len(rootPath) != 0 {
-		p.Log.File.Filename = path.Join(rootPath, fmt.Sprintf("masterservice-%d.log", p.NodeID))
+		p.Log.File.Filename = path.Join(rootPath, "masterservice.log")
 	} else {
 		p.Log.File.Filename = ""
 	}
 }
 
 func (p *ParamTable) initRoleName() {
-	p.RoleName = fmt.Sprintf("%s-%d", "MasterService", p.NodeID)
+	p.RoleName = "MasterService"
 }

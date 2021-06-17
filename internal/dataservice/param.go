@@ -1,5 +1,4 @@
-// Copyright (C) 2019-2020 Zilliz. All rights reserved.
-//
+// Copyright (C) 2019-2020 Zilliz. All rights reserved.//
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance
 // with the License. You may obtain a copy of the License at
 //
@@ -13,6 +12,7 @@ package dataservice
 import (
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/milvus-io/milvus/internal/log"
@@ -25,10 +25,24 @@ type ParamTable struct {
 
 	NodeID int64
 
-	EtcdAddress   string
-	MetaRootPath  string
-	KvRootPath    string
+	IP   string
+	Port int
+
+	// --- ETCD ---
+	EtcdEndpoints           []string
+	MetaRootPath            string
+	KvRootPath              string
+	SegmentBinlogSubPath    string
+	CollectionBinlogSubPath string
+	SegmentDmlPosSubPath    string
+	SegmentDdlPosSubPath    string
+	DmlChannelPosSubPath    string
+
+	// --- Pulsar ---
 	PulsarAddress string
+
+	FlushStreamPosSubPath string
+	StatsStreamPosSubPath string
 
 	// segment
 	SegmentSize           float64
@@ -45,8 +59,7 @@ type ParamTable struct {
 	K2SChannelNames             []string
 	ProxyTimeTickChannelName    string
 
-	SegmentFlushMetaPath string
-	Log                  log.Config
+	Log log.Config
 }
 
 var Params ParamTable
@@ -64,9 +77,12 @@ func (p *ParamTable) Init() {
 		// set members
 		p.initNodeID()
 
-		p.initEtcdAddress()
+		p.initEtcdEndpoints()
 		p.initMetaRootPath()
 		p.initKvRootPath()
+		p.initSegmentBinlogSubPath()
+		p.initCollectionBinlogSubPath()
+
 		p.initPulsarAddress()
 
 		p.initSegmentSize()
@@ -80,9 +96,13 @@ func (p *ParamTable) Init() {
 		p.initSegmentInfoChannelName()
 		p.initDataServiceSubscriptionName()
 		p.initK2SChannelNames()
-		p.initSegmentFlushMetaPath()
 		p.initLogCfg()
 		p.initProxyServiceTimeTickChannelName()
+
+		p.initFlushStreamPosSubPath()
+		p.initStatsStreamPosSubPath()
+		p.initSegmentDmlPosSubPath()
+		p.initDmlChannelPosSubPath()
 	})
 }
 
@@ -90,12 +110,12 @@ func (p *ParamTable) initNodeID() {
 	p.NodeID = p.ParseInt64("dataservice.nodeID")
 }
 
-func (p *ParamTable) initEtcdAddress() {
-	addr, err := p.Load("_EtcdAddress")
+func (p *ParamTable) initEtcdEndpoints() {
+	endpoints, err := p.Load("_EtcdEndpoints")
 	if err != nil {
 		panic(err)
 	}
-	p.EtcdAddress = addr
+	p.EtcdEndpoints = strings.Split(endpoints, ",")
 }
 
 func (p *ParamTable) initPulsarAddress() {
@@ -129,6 +149,23 @@ func (p *ParamTable) initKvRootPath() {
 	}
 	p.KvRootPath = rootPath + "/" + subPath
 }
+
+func (p *ParamTable) initSegmentBinlogSubPath() {
+	subPath, err := p.Load("etcd.segmentBinlogSubPath")
+	if err != nil {
+		panic(err)
+	}
+	p.SegmentBinlogSubPath = subPath
+}
+
+func (p *ParamTable) initCollectionBinlogSubPath() {
+	subPath, err := p.Load("etcd.collectionBinlogSubPath")
+	if err != nil {
+		panic(err)
+	}
+	p.CollectionBinlogSubPath = subPath
+}
+
 func (p *ParamTable) initSegmentSize() {
 	p.SegmentSize = p.ParseFloat("dataservice.segment.size")
 }
@@ -207,14 +244,6 @@ func (p *ParamTable) initK2SChannelNames() {
 	p.K2SChannelNames = ret
 }
 
-func (p *ParamTable) initSegmentFlushMetaPath() {
-	subPath, err := p.Load("etcd.segFlushMetaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.SegmentFlushMetaPath = subPath
-}
-
 func (p *ParamTable) initLogCfg() {
 	p.Log = log.Config{}
 	format, err := p.Load("log.format")
@@ -256,4 +285,36 @@ func (p *ParamTable) initProxyServiceTimeTickChannelName() {
 		panic(err)
 	}
 	p.ProxyTimeTickChannelName = ch
+}
+
+func (p *ParamTable) initFlushStreamPosSubPath() {
+	subPath, err := p.Load("etcd.flushStreamPosSubPath")
+	if err != nil {
+		panic(err)
+	}
+	p.FlushStreamPosSubPath = subPath
+}
+
+func (p *ParamTable) initStatsStreamPosSubPath() {
+	subPath, err := p.Load("etcd.statsStreamPosSubPath")
+	if err != nil {
+		panic(err)
+	}
+	p.StatsStreamPosSubPath = subPath
+}
+
+func (p *ParamTable) initSegmentDmlPosSubPath() {
+	subPath, err := p.Load("etcd.segmentDmlPosSubPath")
+	if err != nil {
+		panic(err)
+	}
+	p.SegmentDmlPosSubPath = subPath
+}
+
+func (p *ParamTable) initDmlChannelPosSubPath() {
+	subPath, err := p.Load("etcd.dmlChanPosSubPath")
+	if err != nil {
+		panic(err)
+	}
+	p.DmlChannelPosSubPath = subPath
 }

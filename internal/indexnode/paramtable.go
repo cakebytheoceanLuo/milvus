@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 
 	"go.uber.org/zap"
@@ -41,6 +42,9 @@ type ParamTable struct {
 	NodeID int64
 
 	MasterAddress string
+
+	EtcdEndpoints []string
+	MetaRootPath  string
 
 	MinIOAddress         string
 	MinIOAccessKeyID     string
@@ -68,6 +72,8 @@ func (pt *ParamTable) initParams() {
 	pt.initMinIOSecretAccessKey()
 	pt.initMinIOUseSSL()
 	pt.initMinioBucketName()
+	pt.initEtcdEndpoints()
+	pt.initMetaRootPath()
 }
 
 func (pt *ParamTable) LoadConfigFromInitParams(initParams *internalpb.InitParams) error {
@@ -152,6 +158,26 @@ func (pt *ParamTable) initMinIOUseSSL() {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func (pt *ParamTable) initEtcdEndpoints() {
+	endpoints, err := pt.Load("_EtcdEndpoints")
+	if err != nil {
+		panic(err)
+	}
+	pt.EtcdEndpoints = strings.Split(endpoints, ",")
+}
+
+func (pt *ParamTable) initMetaRootPath() {
+	rootPath, err := pt.Load("etcd.rootPath")
+	if err != nil {
+		panic(err)
+	}
+	subPath, err := pt.Load("etcd.metaSubPath")
+	if err != nil {
+		panic(err)
+	}
+	pt.MetaRootPath = path.Join(rootPath, subPath)
 }
 
 func (pt *ParamTable) initMinioBucketName() {

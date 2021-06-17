@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/milvus-io/milvus/internal/log"
@@ -30,6 +31,7 @@ type ParamTable struct {
 	NodeID uint64
 
 	Address        string
+	Port           int
 	QueryServiceID UniqueID
 
 	// stats
@@ -42,8 +44,12 @@ type ParamTable struct {
 	RoleName string
 
 	// search
-	SearchChannelName       string
-	SearchResultChannelName string
+	SearchChannelPrefix       string
+	SearchResultChannelPrefix string
+
+	// --- ETCD ---
+	EtcdEndpoints []string
+	MetaRootPath  string
 }
 
 var Params ParamTable
@@ -74,8 +80,12 @@ func (p *ParamTable) Init() {
 		p.initTimeTickChannelName()
 		p.initQueryServiceAddress()
 		p.initRoleName()
-		p.initSearchChannelName()
-		p.initSearchResultChannelName()
+		p.initSearchChannelPrefix()
+		p.initSearchResultChannelPrefix()
+
+		// --- ETCD ---
+		p.initEtcdEndpoints()
+		p.initMetaRootPath()
 	})
 }
 
@@ -147,20 +157,40 @@ func (p *ParamTable) initRoleName() {
 	p.RoleName = fmt.Sprintf("%s-%d", "QueryService", p.NodeID)
 }
 
-func (p *ParamTable) initSearchChannelName() {
+func (p *ParamTable) initSearchChannelPrefix() {
 	channelName, err := p.Load("msgChannel.chanNamePrefix.search")
 	if err != nil {
 		log.Error(err.Error())
 	}
 
-	p.SearchChannelName = channelName
+	p.SearchChannelPrefix = channelName
 }
 
-func (p *ParamTable) initSearchResultChannelName() {
+func (p *ParamTable) initSearchResultChannelPrefix() {
 	channelName, err := p.Load("msgChannel.chanNamePrefix.searchResult")
 	if err != nil {
 		log.Error(err.Error())
 	}
 
-	p.SearchResultChannelName = channelName
+	p.SearchResultChannelPrefix = channelName
+}
+
+func (p *ParamTable) initEtcdEndpoints() {
+	endpoints, err := p.Load("_EtcdEndpoints")
+	if err != nil {
+		panic(err)
+	}
+	p.EtcdEndpoints = strings.Split(endpoints, ",")
+}
+
+func (p *ParamTable) initMetaRootPath() {
+	rootPath, err := p.Load("etcd.rootPath")
+	if err != nil {
+		panic(err)
+	}
+	subPath, err := p.Load("etcd.metaSubPath")
+	if err != nil {
+		panic(err)
+	}
+	p.MetaRootPath = path.Join(rootPath, subPath)
 }

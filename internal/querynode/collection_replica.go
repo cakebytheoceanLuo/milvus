@@ -23,11 +23,11 @@ package querynode
 */
 import "C"
 import (
+	"errors"
 	"fmt"
+	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"strconv"
 	"sync"
-
-	"errors"
 
 	"go.uber.org/zap"
 
@@ -53,9 +53,7 @@ type ReplicaInterface interface {
 	hasCollection(collectionID UniqueID) bool
 	getCollectionNum() int
 	getPartitionIDs(collectionID UniqueID) ([]UniqueID, error)
-
 	getVecFieldIDsByCollectionID(collectionID UniqueID) ([]int64, error)
-	getFieldIDsByCollectionID(collectionID UniqueID) ([]int64, error)
 
 	// partition
 	addPartition(collectionID UniqueID, partitionID UniqueID) error
@@ -64,47 +62,36 @@ type ReplicaInterface interface {
 	hasPartition(partitionID UniqueID) bool
 	getPartitionNum() int
 	getSegmentIDs(partitionID UniqueID) ([]UniqueID, error)
-
-	enablePartition(partitionID UniqueID) error
-	disablePartition(partitionID UniqueID) error
+	getSegmentIDsByVChannel(partitionID UniqueID, vChannel Channel) ([]UniqueID, error)
 
 	// segment
-	addSegment(segmentID UniqueID, partitionID UniqueID, collectionID UniqueID, segType segmentType) error
+	addSegment(segmentID UniqueID, partitionID UniqueID, collectionID UniqueID, vChannelID Channel, segType segmentType, onService bool) error
 	setSegment(segment *Segment) error
 	removeSegment(segmentID UniqueID) error
 	getSegmentByID(segmentID UniqueID) (*Segment, error)
 	hasSegment(segmentID UniqueID) bool
 	getSegmentNum() int
-	setSegmentEnableIndex(segmentID UniqueID, enable bool) error
-	setSegmentEnableLoadBinLog(segmentID UniqueID, enable bool) error
-	getSegmentsToLoadBySegmentType(segType segmentType) ([]UniqueID, []UniqueID, []UniqueID)
 	getSegmentStatistics() []*internalpb.SegmentStats
 
 	// excluded segments
 	initExcludedSegments(collectionID UniqueID)
 	removeExcludedSegments(collectionID UniqueID)
-	addExcludedSegments(collectionID UniqueID, segmentIDs []UniqueID) error
-	getExcludedSegments(collectionID UniqueID) ([]UniqueID, error)
+	addExcludedSegments(collectionID UniqueID, segmentInfos []*datapb.SegmentInfo) error
+	getExcludedSegments(collectionID UniqueID) ([]*datapb.SegmentInfo, error)
 
-	getEnabledSegmentsBySegmentType(segType segmentType) ([]UniqueID, []UniqueID, []UniqueID)
 	getSegmentsBySegmentType(segType segmentType) ([]UniqueID, []UniqueID, []UniqueID)
 	replaceGrowingSegmentBySealedSegment(segment *Segment) error
 
-	getTSafe(collectionID UniqueID) tSafer
-	addTSafe(collectionID UniqueID)
-	removeTSafe(collectionID UniqueID)
 	freeAll()
 }
 
 type collectionReplica struct {
-	tSafes map[UniqueID]tSafer // map[collectionID]tSafer
-
 	mu          sync.RWMutex // guards all
 	collections map[UniqueID]*Collection
 	partitions  map[UniqueID]*Partition
 	segments    map[UniqueID]*Segment
 
-	excludedSegments map[UniqueID][]UniqueID // map[collectionID]segmentIDs
+	excludedSegments map[UniqueID][]*datapb.SegmentInfo // map[collectionID]segmentIDs
 }
 
 //----------------------------------------------------------------------------------------------------- collection
@@ -223,26 +210,6 @@ func (colReplica *collectionReplica) getVecFieldIDsByCollectionID(collectionID U
 	return vecFields, nil
 }
 
-func (colReplica *collectionReplica) getFieldIDsByCollectionID(collectionID UniqueID) ([]int64, error) {
-	colReplica.mu.RLock()
-	defer colReplica.mu.RUnlock()
-
-	fields, err := colReplica.getFieldsByCollectionIDPrivate(collectionID)
-	if err != nil {
-		return nil, err
-	}
-
-	targetFields := make([]int64, 0)
-	for _, field := range fields {
-		targetFields = append(targetFields, field.FieldID)
-	}
-
-	// add row id field
-	targetFields = append(targetFields, rowIDFieldID)
-
-	return targetFields, nil
-}
-
 func (colReplica *collectionReplica) getFieldsByCollectionIDPrivate(collectionID UniqueID) ([]*schemapb.FieldSchema, error) {
 	collection, err := colReplica.getCollectionByIDPrivate(collectionID)
 	if err != nil {
@@ -342,6 +309,27 @@ func (colReplica *collectionReplica) getSegmentIDs(partitionID UniqueID) ([]Uniq
 	return colReplica.getSegmentIDsPrivate(partitionID)
 }
 
+func (colReplica *collectionReplica) getSegmentIDsByVChannel(partitionID UniqueID, vChannel Channel) ([]UniqueID, error) {
+	colReplica.mu.RLock()
+	defer colReplica.mu.RUnlock()
+	segmentIDs, err := colReplica.getSegmentIDsPrivate(partitionID)
+	if err != nil {
+		return nil, err
+	}
+	segmentIDsTmp := make([]UniqueID, 0)
+	for _, segmentID := range segmentIDs {
+		segment, err := colReplica.getSegmentByIDPrivate(segmentID)
+		if err != nil {
+			return nil, err
+		}
+		if segment.vChannelID == vChannel {
+			segmentIDsTmp = append(segmentIDsTmp, segment.ID())
+		}
+	}
+
+	return segmentIDsTmp, nil
+}
+
 func (colReplica *collectionReplica) getSegmentIDsPrivate(partitionID UniqueID) ([]UniqueID, error) {
 	partition, err2 := colReplica.getPartitionByIDPrivate(partitionID)
 	if err2 != nil {
@@ -350,52 +338,16 @@ func (colReplica *collectionReplica) getSegmentIDsPrivate(partitionID UniqueID) 
 	return partition.segmentIDs, nil
 }
 
-func (colReplica *collectionReplica) enablePartition(partitionID UniqueID) error {
-	colReplica.mu.Lock()
-	defer colReplica.mu.Unlock()
-
-	partition, err := colReplica.getPartitionByIDPrivate(partitionID)
-	if err != nil {
-		return err
-	}
-
-	partition.enable = true
-	return nil
-}
-
-func (colReplica *collectionReplica) disablePartition(partitionID UniqueID) error {
-	colReplica.mu.Lock()
-	defer colReplica.mu.Unlock()
-
-	partition, err := colReplica.getPartitionByIDPrivate(partitionID)
-	if err != nil {
-		return err
-	}
-
-	partition.enable = false
-	return nil
-}
-
-func (colReplica *collectionReplica) getEnabledPartitionIDsPrivate() []UniqueID {
-	partitionIDs := make([]UniqueID, 0)
-	for _, partition := range colReplica.partitions {
-		if partition.enable {
-			partitionIDs = append(partitionIDs, partition.partitionID)
-		}
-	}
-	return partitionIDs
-}
-
 //----------------------------------------------------------------------------------------------------- segment
-func (colReplica *collectionReplica) addSegment(segmentID UniqueID, partitionID UniqueID, collectionID UniqueID, segType segmentType) error {
+func (colReplica *collectionReplica) addSegment(segmentID UniqueID, partitionID UniqueID, collectionID UniqueID, vChannelID Channel, segType segmentType, onService bool) error {
 	colReplica.mu.Lock()
 	defer colReplica.mu.Unlock()
 	collection, err := colReplica.getCollectionByIDPrivate(collectionID)
 	if err != nil {
 		return err
 	}
-	var newSegment = newSegment(collection, segmentID, partitionID, collectionID, segType)
-	return colReplica.addSegmentPrivate(segmentID, partitionID, newSegment)
+	seg := newSegment(collection, segmentID, partitionID, collectionID, vChannelID, segType, onService)
+	return colReplica.addSegmentPrivate(segmentID, partitionID, seg)
 }
 
 func (colReplica *collectionReplica) addSegmentPrivate(segmentID UniqueID, partitionID UniqueID, segment *Segment) error {
@@ -505,35 +457,6 @@ func (colReplica *collectionReplica) getSegmentStatistics() []*internalpb.Segmen
 	return statisticData
 }
 
-func (colReplica *collectionReplica) getEnabledSegmentsBySegmentType(segType segmentType) ([]UniqueID, []UniqueID, []UniqueID) {
-	colReplica.mu.RLock()
-	defer colReplica.mu.RUnlock()
-
-	targetCollectionIDs := make([]UniqueID, 0)
-	targetPartitionIDs := make([]UniqueID, 0)
-	targetSegmentIDs := make([]UniqueID, 0)
-
-	for _, partitionID := range colReplica.getEnabledPartitionIDsPrivate() {
-		segmentIDs, err := colReplica.getSegmentIDsPrivate(partitionID)
-		if err != nil {
-			continue
-		}
-		for _, segmentID := range segmentIDs {
-			segment, err := colReplica.getSegmentByIDPrivate(segmentID)
-			if err != nil {
-				continue
-			}
-			if segment.getType() == segType {
-				targetCollectionIDs = append(targetCollectionIDs, segment.collectionID)
-				targetPartitionIDs = append(targetPartitionIDs, segment.partitionID)
-				targetSegmentIDs = append(targetSegmentIDs, segment.segmentID)
-			}
-		}
-	}
-
-	return targetCollectionIDs, targetPartitionIDs, targetSegmentIDs
-}
-
 func (colReplica *collectionReplica) getSegmentsBySegmentType(segType segmentType) ([]UniqueID, []UniqueID, []UniqueID) {
 	colReplica.mu.RLock()
 	defer colReplica.mu.RUnlock()
@@ -578,39 +501,11 @@ func (colReplica *collectionReplica) replaceGrowingSegmentBySealedSegment(segmen
 	return nil
 }
 
-func (colReplica *collectionReplica) setSegmentEnableIndex(segmentID UniqueID, enable bool) error {
-	colReplica.mu.Lock()
-	defer colReplica.mu.Unlock()
-
-	targetSegment, err := colReplica.getSegmentByIDPrivate(segmentID)
-	if targetSegment.segmentType != segmentTypeSealed {
-		return errors.New("unexpected segment type")
-	}
-	if err == nil && targetSegment != nil {
-		targetSegment.setEnableIndex(enable)
-	}
-	return nil
-}
-
-func (colReplica *collectionReplica) setSegmentEnableLoadBinLog(segmentID UniqueID, enable bool) error {
-	colReplica.mu.Lock()
-	defer colReplica.mu.Unlock()
-
-	targetSegment, err := colReplica.getSegmentByIDPrivate(segmentID)
-	if targetSegment.segmentType != segmentTypeGrowing {
-		return errors.New("unexpected segment type")
-	}
-	if err == nil && targetSegment != nil {
-		targetSegment.setLoadBinLogEnable(enable)
-	}
-	return nil
-}
-
 func (colReplica *collectionReplica) initExcludedSegments(collectionID UniqueID) {
 	colReplica.mu.Lock()
 	defer colReplica.mu.Unlock()
 
-	colReplica.excludedSegments[collectionID] = make([]UniqueID, 0)
+	colReplica.excludedSegments[collectionID] = make([]*datapb.SegmentInfo, 0)
 }
 
 func (colReplica *collectionReplica) removeExcludedSegments(collectionID UniqueID) {
@@ -620,7 +515,7 @@ func (colReplica *collectionReplica) removeExcludedSegments(collectionID UniqueI
 	delete(colReplica.excludedSegments, collectionID)
 }
 
-func (colReplica *collectionReplica) addExcludedSegments(collectionID UniqueID, segmentIDs []UniqueID) error {
+func (colReplica *collectionReplica) addExcludedSegments(collectionID UniqueID, segmentInfos []*datapb.SegmentInfo) error {
 	colReplica.mu.Lock()
 	defer colReplica.mu.Unlock()
 
@@ -628,11 +523,11 @@ func (colReplica *collectionReplica) addExcludedSegments(collectionID UniqueID, 
 		return errors.New("addExcludedSegments failed, cannot found collection, id =" + fmt.Sprintln(collectionID))
 	}
 
-	colReplica.excludedSegments[collectionID] = append(colReplica.excludedSegments[collectionID], segmentIDs...)
+	colReplica.excludedSegments[collectionID] = append(colReplica.excludedSegments[collectionID], segmentInfos...)
 	return nil
 }
 
-func (colReplica *collectionReplica) getExcludedSegments(collectionID UniqueID) ([]UniqueID, error) {
+func (colReplica *collectionReplica) getExcludedSegments(collectionID UniqueID) ([]*datapb.SegmentInfo, error) {
 	colReplica.mu.RLock()
 	defer colReplica.mu.RUnlock()
 
@@ -641,31 +536,6 @@ func (colReplica *collectionReplica) getExcludedSegments(collectionID UniqueID) 
 	}
 
 	return colReplica.excludedSegments[collectionID], nil
-}
-
-//-----------------------------------------------------------------------------------------------------
-func (colReplica *collectionReplica) getTSafe(collectionID UniqueID) tSafer {
-	colReplica.mu.RLock()
-	defer colReplica.mu.RUnlock()
-	return colReplica.getTSafePrivate(collectionID)
-}
-
-func (colReplica *collectionReplica) getTSafePrivate(collectionID UniqueID) tSafer {
-	return colReplica.tSafes[collectionID]
-}
-
-func (colReplica *collectionReplica) addTSafe(collectionID UniqueID) {
-	colReplica.mu.Lock()
-	defer colReplica.mu.Unlock()
-	colReplica.tSafes[collectionID] = newTSafe()
-}
-
-func (colReplica *collectionReplica) removeTSafe(collectionID UniqueID) {
-	colReplica.mu.Lock()
-	defer colReplica.mu.Unlock()
-	ts := colReplica.getTSafePrivate(collectionID)
-	ts.close()
-	delete(colReplica.tSafes, collectionID)
 }
 
 func (colReplica *collectionReplica) freeAll() {
@@ -681,37 +551,11 @@ func (colReplica *collectionReplica) freeAll() {
 	colReplica.segments = make(map[UniqueID]*Segment)
 }
 
-func (colReplica *collectionReplica) getSegmentsToLoadBySegmentType(segType segmentType) ([]UniqueID, []UniqueID, []UniqueID) {
-	colReplica.mu.RLock()
-	defer colReplica.mu.RUnlock()
-
-	targetCollectionIDs := make([]UniqueID, 0)
-	targetPartitionIDs := make([]UniqueID, 0)
-	targetSegmentIDs := make([]UniqueID, 0)
-
-	for _, segment := range colReplica.segments {
-		if !segment.enableLoadBinLog {
-			continue
-		}
-		if segment.getType() == segType {
-			if segType == segmentTypeSealed && !segment.getEnableIndex() {
-				continue
-			}
-
-			targetCollectionIDs = append(targetCollectionIDs, segment.collectionID)
-			targetPartitionIDs = append(targetPartitionIDs, segment.partitionID)
-			targetSegmentIDs = append(targetSegmentIDs, segment.segmentID)
-		}
-	}
-
-	return targetCollectionIDs, targetPartitionIDs, targetSegmentIDs
-}
-
 func newCollectionReplica() ReplicaInterface {
 	collections := make(map[UniqueID]*Collection)
 	partitions := make(map[UniqueID]*Partition)
 	segments := make(map[UniqueID]*Segment)
-	excludedSegments := make(map[UniqueID][]UniqueID)
+	excludedSegments := make(map[UniqueID][]*datapb.SegmentInfo)
 
 	var replica ReplicaInterface = &collectionReplica{
 		collections: collections,
@@ -719,8 +563,6 @@ func newCollectionReplica() ReplicaInterface {
 		segments:    segments,
 
 		excludedSegments: excludedSegments,
-
-		tSafes: make(map[UniqueID]tSafer),
 	}
 
 	return replica

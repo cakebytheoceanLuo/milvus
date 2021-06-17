@@ -15,9 +15,11 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/etcdpb"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/zap"
 )
 
 func TestInsertCodec(t *testing.T) {
@@ -228,13 +230,13 @@ func TestInsertCodec(t *testing.T) {
 			},
 		},
 	}
-	firstBlobs, err := insertCodec.Serialize(1, 1, insertDataFirst)
+	firstBlobs, _, err := insertCodec.Serialize(1, 1, insertDataFirst)
 	assert.Nil(t, err)
 	for _, blob := range firstBlobs {
 		blob.Key = fmt.Sprintf("1/insert_log/2/3/4/5/%d", 100)
 		assert.Equal(t, blob.GetKey(), blob.Key)
 	}
-	secondBlobs, err := insertCodec.Serialize(1, 1, insertDataSecond)
+	secondBlobs, _, err := insertCodec.Serialize(1, 1, insertDataSecond)
 	assert.Nil(t, err)
 	for _, blob := range secondBlobs {
 		blob.Key = fmt.Sprintf("1/insert_log/2/3/4/5/%d", 99)
@@ -271,6 +273,8 @@ func TestInsertCodec(t *testing.T) {
 	assert.Equal(t, []float32{0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7},
 		resultData.Data[109].(*FloatVectorFieldData).Data)
 	assert.Nil(t, insertCodec.Close())
+	log.Debug("Data", zap.Any("Data", resultData.Data))
+	log.Debug("Infos", zap.Any("Infos", resultData.Infos))
 
 	blobs := []*Blob{}
 	_, _, _, err = insertCodec.Deserialize(blobs)
@@ -353,7 +357,7 @@ func TestIndexCodec(t *testing.T) {
 func TestTsError(t *testing.T) {
 	insertData := &InsertData{}
 	insertCodec := NewInsertCodec(nil)
-	blobs, err := insertCodec.Serialize(1, 1, insertData)
+	blobs, _, err := insertCodec.Serialize(1, 1, insertData)
 	assert.Nil(t, blobs)
 	assert.NotNil(t, err)
 }
@@ -410,7 +414,7 @@ func TestSchemaError(t *testing.T) {
 		},
 	}
 	insertCodec := NewInsertCodec(schema)
-	blobs, err := insertCodec.Serialize(1, 1, insertData)
+	blobs, _, err := insertCodec.Serialize(1, 1, insertData)
 	assert.Nil(t, blobs)
 	assert.NotNil(t, err)
 }

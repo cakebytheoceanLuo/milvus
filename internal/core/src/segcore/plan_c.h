@@ -20,9 +20,14 @@ extern "C" {
 
 typedef void* CPlan;
 typedef void* CPlaceholderGroup;
+typedef void* CRetrievePlan;
 
 CStatus
 CreatePlan(CCollection col, const char* dsl, CPlan* res_plan);
+
+// Note: serialized_expr_plan is of binary format
+CStatus
+CreatePlanByExpr(CCollection col, const char* serialized_expr_plan, int64_t size, CPlan* res_plan);
 
 CStatus
 ParsePlaceholderGroup(CPlan plan,
@@ -44,6 +49,12 @@ DeletePlan(CPlan plan);
 
 void
 DeletePlaceholderGroup(CPlaceholderGroup placeholder_group);
+
+CStatus
+CreateRetrievePlan(CCollection c_col, CProto retrieve_request, CRetrievePlan* output);
+
+void
+DeleteRetrievePlan(CRetrievePlan plan);
 
 #ifdef __cplusplus
 }

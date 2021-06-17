@@ -23,7 +23,7 @@ set(MILVUS_TEST_FILES
         test_indexing.cpp
         test_query.cpp
         test_expr.cpp
-        test_bitmap.cpp 
+        test_bitmap.cpp
         test_binary.cpp
         test_index_wrapper.cpp
         test_common.cpp
@@ -34,6 +34,8 @@ set(MILVUS_TEST_FILES
         test_load.cpp
         init_gtest.cpp
         test_init.cpp
+        test_plan_proto.cpp
+        test_get_entity_by_ids.cpp
         )
 
 add_executable(all_tests
@@ -48,6 +50,7 @@ set(INDEX_BUILDER_TEST_FILES
 add_executable(index_builder_test
         ${INDEX_BUILDER_TEST_FILES}
         )
+
 target_link_libraries(index_builder_test
         gtest
         gtest_main
@@ -65,5 +68,5 @@ target_link_libraries(all_tests
         pthread
         )
 
-install (TARGETS all_tests DESTINATION unittest)
-install (TARGETS index_builder_test DESTINATION unittest)
+install(TARGETS all_tests DESTINATION unittest)
+install(TARGETS index_builder_test DESTINATION unittest)

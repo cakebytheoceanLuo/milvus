@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/milvus-io/milvus/internal/datanode"
@@ -25,8 +26,8 @@ import (
 	"github.com/milvus-io/milvus/internal/indexservice"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/masterservice"
+	"github.com/milvus-io/milvus/internal/metrics"
 	"github.com/milvus-io/milvus/internal/proxynode"
-	"github.com/milvus-io/milvus/internal/proxyservice"
 	"github.com/milvus-io/milvus/internal/querynode"
 	"github.com/milvus-io/milvus/internal/queryservice"
 
@@ -45,7 +46,6 @@ func newMsgFactory(localMsg bool) msgstream.Factory {
 
 type MilvusRoles struct {
 	EnableMaster           bool `env:"ENABLE_MASTER"`
-	EnableProxyService     bool `env:"ENABLE_PROXY_SERVICE"`
 	EnableProxyNode        bool `env:"ENABLE_PROXY_NODE"`
 	EnableQueryService     bool `env:"ENABLE_QUERY_SERVICE"`
 	EnableQueryNode        bool `env:"ENABLE_QUERY_NODE"`
@@ -63,17 +63,20 @@ func (mr *MilvusRoles) EnvValue(env string) bool {
 }
 
 func (mr *MilvusRoles) Run(localMsg bool) {
-	closer := trace.InitTracing("singleNode")
-	if closer != nil {
-		defer closer.Close()
+	if os.Getenv("DEPLOY_MODE") == "STANDALONE" {
+		closer := trace.InitTracing("standalone")
+		if closer != nil {
+			defer closer.Close()
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	if mr.EnableMaster {
 		var ms *components.MasterService
+		var wg sync.WaitGroup
 
+		wg.Add(1)
 		go func() {
 			masterservice.Params.Init()
 			logutil.SetupLogger(&masterservice.Params.Log)
@@ -85,39 +88,23 @@ func (mr *MilvusRoles) Run(localMsg bool) {
 			if err != nil {
 				panic(err)
 			}
+			wg.Done()
 			_ = ms.Run()
 		}()
 
+		wg.Wait()
 		if ms != nil {
 			defer ms.Stop()
 		}
-	}
 
-	if mr.EnableProxyService {
-		var ps *components.ProxyService
-
-		go func() {
-			proxyservice.Params.Init()
-			logutil.SetupLogger(&proxyservice.Params.Log)
-			defer log.Sync()
-
-			factory := newMsgFactory(localMsg)
-			var err error
-			ps, err = components.NewProxyService(ctx, factory)
-			if err != nil {
-				panic(err)
-			}
-			_ = ps.Run()
-		}()
-
-		if ps != nil {
-			defer ps.Stop()
-		}
+		metrics.RegisterMaster()
 	}
 
 	if mr.EnableProxyNode {
 		var pn *components.ProxyNode
+		var wg sync.WaitGroup
 
+		wg.Add(1)
 		go func() {
 			proxynode.Params.Init()
 			logutil.SetupLogger(&proxynode.Params.Log)
@@ -129,17 +116,23 @@ func (mr *MilvusRoles) Run(localMsg bool) {
 			if err != nil {
 				panic(err)
 			}
+			wg.Done()
 			_ = pn.Run()
 		}()
 
+		wg.Wait()
 		if pn != nil {
 			defer pn.Stop()
 		}
+
+		metrics.RegisterProxyNode()
 	}
 
 	if mr.EnableQueryService {
 		var qs *components.QueryService
+		var wg sync.WaitGroup
 
+		wg.Add(1)
 		go func() {
 			queryservice.Params.Init()
 			logutil.SetupLogger(&queryservice.Params.Log)
@@ -151,17 +144,23 @@ func (mr *MilvusRoles) Run(localMsg bool) {
 			if err != nil {
 				panic(err)
 			}
+			wg.Done()
 			_ = qs.Run()
 		}()
 
+		wg.Wait()
 		if qs != nil {
 			defer qs.Stop()
 		}
+
+		metrics.RegisterQueryService()
 	}
 
 	if mr.EnableQueryNode {
 		var qn *components.QueryNode
+		var wg sync.WaitGroup
 
+		wg.Add(1)
 		go func() {
 			querynode.Params.Init()
 			logutil.SetupLogger(&querynode.Params.Log)
@@ -173,17 +172,23 @@ func (mr *MilvusRoles) Run(localMsg bool) {
 			if err != nil {
 				panic(err)
 			}
+			wg.Done()
 			_ = qn.Run()
 		}()
 
+		wg.Wait()
 		if qn != nil {
 			defer qn.Stop()
 		}
+
+		metrics.RegisterQueryNode()
 	}
 
 	if mr.EnableDataService {
 		var ds *components.DataService
+		var wg sync.WaitGroup
 
+		wg.Add(1)
 		go func() {
 			dataservice.Params.Init()
 			logutil.SetupLogger(&dataservice.Params.Log)
@@ -195,17 +200,23 @@ func (mr *MilvusRoles) Run(localMsg bool) {
 			if err != nil {
 				panic(err)
 			}
+			wg.Done()
 			_ = ds.Run()
 		}()
 
+		wg.Wait()
 		if ds != nil {
 			defer ds.Stop()
 		}
+
+		metrics.RegisterDataService()
 	}
 
 	if mr.EnableDataNode {
 		var dn *components.DataNode
+		var wg sync.WaitGroup
 
+		wg.Add(1)
 		go func() {
 			datanode.Params.Init()
 			logutil.SetupLogger(&datanode.Params.Log)
@@ -217,17 +228,23 @@ func (mr *MilvusRoles) Run(localMsg bool) {
 			if err != nil {
 				panic(err)
 			}
+			wg.Done()
 			_ = dn.Run()
 		}()
 
+		wg.Wait()
 		if dn != nil {
 			defer dn.Stop()
 		}
+
+		metrics.RegisterDataNode()
 	}
 
 	if mr.EnableIndexService {
 		var is *components.IndexService
+		var wg sync.WaitGroup
 
+		wg.Add(1)
 		go func() {
 			indexservice.Params.Init()
 			logutil.SetupLogger(&indexservice.Params.Log)
@@ -238,17 +255,23 @@ func (mr *MilvusRoles) Run(localMsg bool) {
 			if err != nil {
 				panic(err)
 			}
+			wg.Done()
 			_ = is.Run()
 		}()
 
+		wg.Wait()
 		if is != nil {
 			defer is.Stop()
 		}
+
+		metrics.RegisterIndexService()
 	}
 
 	if mr.EnableIndexNode {
 		var in *components.IndexNode
+		var wg sync.WaitGroup
 
+		wg.Add(1)
 		go func() {
 			indexnode.Params.Init()
 			logutil.SetupLogger(&indexnode.Params.Log)
@@ -259,30 +282,42 @@ func (mr *MilvusRoles) Run(localMsg bool) {
 			if err != nil {
 				panic(err)
 			}
+			wg.Done()
 			_ = in.Run()
 		}()
 
+		wg.Wait()
 		if in != nil {
-			in.Stop()
+			defer in.Stop()
 		}
+
+		metrics.RegisterIndexNode()
 	}
 
 	if mr.EnableMsgStreamService {
 		var mss *components.MsgStream
+		var wg sync.WaitGroup
 
+		wg.Add(1)
 		go func() {
 			var err error
 			mss, err = components.NewMsgStreamService(ctx)
 			if err != nil {
 				panic(err)
 			}
+			wg.Done()
 			_ = mss.Run()
 		}()
 
+		wg.Wait()
 		if mss != nil {
 			defer mss.Stop()
 		}
+
+		metrics.RegisterMsgStreamService()
 	}
+
+	metrics.ServeHTTP()
 
 	sc := make(chan os.Signal, 1)
 	signal.Notify(sc,
@@ -291,5 +326,8 @@ func (mr *MilvusRoles) Run(localMsg bool) {
 		syscall.SIGTERM,
 		syscall.SIGQUIT)
 	sig := <-sc
-	fmt.Printf("Get %s signal to exit", sig.String())
+	fmt.Printf("Get %s signal to exit\n", sig.String())
+
+	// some deferred Stop has race with context cancel
+	cancel()
 }

@@ -27,10 +27,9 @@ import (
 	grpcdataserviceclient "github.com/milvus-io/milvus/internal/distributed/dataservice/client"
 	grpcindexserviceclient "github.com/milvus-io/milvus/internal/distributed/indexservice/client"
 	grpcmasterserviceclient "github.com/milvus-io/milvus/internal/distributed/masterservice/client"
-	grpcproxyserviceclient "github.com/milvus-io/milvus/internal/distributed/proxyservice/client"
 	grpcqueryserviceclient "github.com/milvus-io/milvus/internal/distributed/queryservice/client"
-	otgrpc "github.com/opentracing-contrib/go-grpc"
 
+	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
@@ -55,7 +54,6 @@ type Server struct {
 
 	grpcErrChan chan error
 
-	proxyServiceClient  *grpcproxyserviceclient.Client
 	masterServiceClient *grpcmasterserviceclient.GrpcClient
 	dataServiceClient   *grpcdataserviceclient.Client
 	queryServiceClient  *grpcqueryserviceclient.Client
@@ -95,15 +93,15 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 	ctx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
-	tracer := opentracing.GlobalTracer()
+	opts := trace.GetInterceptorOpts()
 	s.grpcServer = grpc.NewServer(
 		grpc.MaxRecvMsgSize(math.MaxInt32),
 		grpc.MaxSendMsgSize(math.MaxInt32),
+		grpc.MaxRecvMsgSize(GRPCMaxMagSize),
 		grpc.UnaryInterceptor(
-			otgrpc.OpenTracingServerInterceptor(tracer)),
+			grpc_opentracing.UnaryServerInterceptor(opts...)),
 		grpc.StreamInterceptor(
-			otgrpc.OpenTracingStreamServerInterceptor(tracer)),
-		grpc.MaxRecvMsgSize(GRPCMaxMagSize))
+			grpc_opentracing.StreamServerInterceptor(opts...)))
 	proxypb.RegisterProxyNodeServiceServer(s.grpcServer, s)
 	milvuspb.RegisterMilvusServiceServer(s.grpcServer, s)
 
@@ -129,7 +127,6 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) init() error {
-	ctx := context.Background()
 	var err error
 	Params.Init()
 	if !funcutil.CheckPortAvailable(Params.Port) {
@@ -155,14 +152,11 @@ func (s *Server) init() error {
 	log.Debug("proxynode", zap.Int("proxy port", Params.Port))
 	log.Debug("proxynode", zap.String("proxy address", Params.Address))
 
-	defer func() {
-		if err != nil {
-			err2 := s.Stop()
-			if err2 != nil {
-				log.Debug("Init failed, and Stop failed")
-			}
-		}
-	}()
+	err = s.proxynode.Register()
+	if err != nil {
+		log.Debug("ProxyNode Register etcd failed ", zap.Error(err))
+		return err
+	}
 
 	s.wg.Add(1)
 	go s.startGrpcLoop(Params.Port)
@@ -173,56 +167,53 @@ func (s *Server) init() error {
 		return err
 	}
 
-	s.proxyServiceClient = grpcproxyserviceclient.NewClient(Params.ProxyServiceAddress)
-	err = s.proxyServiceClient.Init()
-	if err != nil {
-		return err
-	}
-	s.proxynode.SetProxyServiceClient(s.proxyServiceClient)
-	log.Debug("set proxy service client ...")
-
 	masterServiceAddr := Params.MasterAddress
-	log.Debug("proxynode", zap.String("master address", masterServiceAddr))
+	log.Debug("ProxyNode", zap.String("master address", masterServiceAddr))
 	timeout := 3 * time.Second
-	s.masterServiceClient, err = grpcmasterserviceclient.NewClient(masterServiceAddr, timeout)
+	s.masterServiceClient, err = grpcmasterserviceclient.NewClient(s.ctx, proxynode.Params.MetaRootPath, proxynode.Params.EtcdEndpoints, timeout)
 	if err != nil {
+		log.Debug("ProxyNode new masterServiceClient failed ", zap.Error(err))
 		return err
 	}
 	err = s.masterServiceClient.Init()
 	if err != nil {
+		log.Debug("ProxyNode new masterServiceClient Init ", zap.Error(err))
 		return err
 	}
-	err = funcutil.WaitForComponentHealthy(ctx, s.masterServiceClient, "MasterService", 1000000, time.Millisecond*200)
+	err = funcutil.WaitForComponentHealthy(s.ctx, s.masterServiceClient, "MasterService", 1000000, time.Millisecond*200)
 
 	if err != nil {
+		log.Debug("ProxyNode WaitForComponentHealthy master service failed ", zap.Error(err))
 		panic(err)
 	}
 	s.proxynode.SetMasterClient(s.masterServiceClient)
 	log.Debug("set master client ...")
 
 	dataServiceAddr := Params.DataServiceAddress
-	log.Debug("proxynode", zap.String("data service address", dataServiceAddr))
-	s.dataServiceClient = grpcdataserviceclient.NewClient(dataServiceAddr)
+	log.Debug("ProxyNode", zap.String("data service address", dataServiceAddr))
+	s.dataServiceClient = grpcdataserviceclient.NewClient(proxynode.Params.MetaRootPath, proxynode.Params.EtcdEndpoints, timeout)
 	err = s.dataServiceClient.Init()
 	if err != nil {
+		log.Debug("ProxyNode dataServiceClient init failed ", zap.Error(err))
 		return err
 	}
 	s.proxynode.SetDataServiceClient(s.dataServiceClient)
 	log.Debug("set data service address ...")
 
 	indexServiceAddr := Params.IndexServerAddress
-	log.Debug("proxynode", zap.String("index server address", indexServiceAddr))
-	s.indexServiceClient = grpcindexserviceclient.NewClient(indexServiceAddr)
+	log.Debug("ProxyNode", zap.String("index server address", indexServiceAddr))
+	s.indexServiceClient = grpcindexserviceclient.NewClient(proxynode.Params.MetaRootPath, proxynode.Params.EtcdEndpoints, timeout)
 	err = s.indexServiceClient.Init()
 	if err != nil {
+		log.Debug("ProxyNode indexServiceClient init failed ", zap.Error(err))
 		return err
 	}
 	s.proxynode.SetIndexServiceClient(s.indexServiceClient)
 	log.Debug("set index service client ...")
 
 	queryServiceAddr := Params.QueryServiceAddress
-	log.Debug("proxynode", zap.String("query server address", queryServiceAddr))
-	s.queryServiceClient, err = grpcqueryserviceclient.NewClient(queryServiceAddr, timeout)
+	log.Debug("ProxyNode", zap.String("query server address", queryServiceAddr))
+	s.queryServiceClient, err = grpcqueryserviceclient.NewClient(proxynode.Params.MetaRootPath, proxynode.Params.EtcdEndpoints, timeout)
 	if err != nil {
 		return err
 	}
@@ -355,6 +346,12 @@ func (s *Server) DescribeIndex(ctx context.Context, request *milvuspb.DescribeIn
 	return s.proxynode.DescribeIndex(ctx, request)
 }
 
+// GetIndexBuildProgress gets index build progress with filed_name and index_name.
+// IndexRows is the num of indexed rows. And TotalRows is the total number of segment rows.
+func (s *Server) GetIndexBuildProgress(ctx context.Context, request *milvuspb.GetIndexBuildProgressRequest) (*milvuspb.GetIndexBuildProgressResponse, error) {
+	return s.proxynode.GetIndexBuildProgress(ctx, request)
+}
+
 func (s *Server) GetIndexState(ctx context.Context, request *milvuspb.GetIndexStateRequest) (*milvuspb.GetIndexStateResponse, error) {
 	return s.proxynode.GetIndexState(ctx, request)
 }
@@ -367,8 +364,16 @@ func (s *Server) Search(ctx context.Context, request *milvuspb.SearchRequest) (*
 	return s.proxynode.Search(ctx, request)
 }
 
+func (s *Server) Retrieve(ctx context.Context, request *milvuspb.RetrieveRequest) (*milvuspb.RetrieveResults, error) {
+	return s.proxynode.Retrieve(ctx, request)
+}
+
 func (s *Server) Flush(ctx context.Context, request *milvuspb.FlushRequest) (*commonpb.Status, error) {
 	return s.proxynode.Flush(ctx, request)
+}
+
+func (s *Server) Query(ctx context.Context, request *milvuspb.QueryRequest) (*milvuspb.QueryResults, error) {
+	return s.proxynode.Query(ctx, request)
 }
 
 func (s *Server) GetDdChannel(ctx context.Context, request *internalpb.GetDdChannelRequest) (*milvuspb.StringResponse, error) {
@@ -382,6 +387,10 @@ func (s *Server) GetPersistentSegmentInfo(ctx context.Context, request *milvuspb
 func (s *Server) GetQuerySegmentInfo(ctx context.Context, request *milvuspb.GetQuerySegmentInfoRequest) (*milvuspb.GetQuerySegmentInfoResponse, error) {
 	return s.proxynode.GetQuerySegmentInfo(ctx, request)
 
+}
+
+func (s *Server) Dummy(ctx context.Context, request *milvuspb.DummyRequest) (*milvuspb.DummyResponse, error) {
+	return s.proxynode.Dummy(ctx, request)
 }
 
 func (s *Server) RegisterLink(ctx context.Context, request *milvuspb.RegisterLinkRequest) (*milvuspb.RegisterLinkResponse, error) {

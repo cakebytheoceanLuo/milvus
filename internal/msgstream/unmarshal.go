@@ -59,11 +59,12 @@ func (pudf *ProtoUDFactory) NewUnmarshalDispatcher() *ProtoUnmarshalDispatcher {
 	createPartitionMsg := CreatePartitionMsg{}
 	dropPartitionMsg := DropPartitionMsg{}
 	loadIndexMsg := LoadIndexMsg{}
-	flushMsg := FlushMsg{}
 	segmentInfoMsg := SegmentInfoMsg{}
 	flushCompletedMsg := FlushCompletedMsg{}
 	queryNodeSegStatsMsg := QueryNodeStatsMsg{}
 	segmentStatisticsMsg := SegmentStatisticsMsg{}
+	loadBalanceSegmentsMsg := LoadBalanceSegmentsMsg{}
+	dataNodeTtMsg := DataNodeTtMsg{}
 
 	p := &ProtoUnmarshalDispatcher{}
 	p.TempMap = make(map[commonpb.MsgType]UnmarshalFunc)
@@ -78,10 +79,11 @@ func (pudf *ProtoUDFactory) NewUnmarshalDispatcher() *ProtoUnmarshalDispatcher {
 	p.TempMap[commonpb.MsgType_CreatePartition] = createPartitionMsg.Unmarshal
 	p.TempMap[commonpb.MsgType_DropPartition] = dropPartitionMsg.Unmarshal
 	p.TempMap[commonpb.MsgType_LoadIndex] = loadIndexMsg.Unmarshal
-	p.TempMap[commonpb.MsgType_Flush] = flushMsg.Unmarshal
 	p.TempMap[commonpb.MsgType_SegmentInfo] = segmentInfoMsg.Unmarshal
 	p.TempMap[commonpb.MsgType_SegmentFlushDone] = flushCompletedMsg.Unmarshal
 	p.TempMap[commonpb.MsgType_SegmentStatistics] = segmentStatisticsMsg.Unmarshal
+	p.TempMap[commonpb.MsgType_LoadBalanceSegments] = loadBalanceSegmentsMsg.Unmarshal
+	p.TempMap[commonpb.MsgType_DataNodeTt] = dataNodeTtMsg.Unmarshal
 
 	return p
 }

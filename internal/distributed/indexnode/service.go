@@ -19,9 +19,11 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 
+	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	grpcindexserviceclient "github.com/milvus-io/milvus/internal/distributed/indexservice/client"
 	"github.com/milvus-io/milvus/internal/indexnode"
 	"github.com/milvus-io/milvus/internal/log"
@@ -32,8 +34,6 @@ import (
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/trace"
-	otgrpc "github.com/opentracing-contrib/go-grpc"
-	"github.com/opentracing/opentracing-go"
 	"google.golang.org/grpc"
 )
 
@@ -67,10 +67,10 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 
 	defer s.loopWg.Done()
 
-	log.Debug("indexnode", zap.Int("network port: ", grpcPort))
+	log.Debug("IndexNode", zap.Int("network port: ", grpcPort))
 	lis, err := net.Listen("tcp", ":"+strconv.Itoa(grpcPort))
 	if err != nil {
-		log.Warn("indexnode", zap.String("GrpcServer:failed to listen", err.Error()))
+		log.Warn("IndexNode", zap.String("GrpcServer:failed to listen", err.Error()))
 		s.grpcErrChan <- err
 		return
 	}
@@ -78,14 +78,14 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 	ctx, cancel := context.WithCancel(s.loopCtx)
 	defer cancel()
 
-	tracer := opentracing.GlobalTracer()
+	opts := trace.GetInterceptorOpts()
 	s.grpcServer = grpc.NewServer(
 		grpc.MaxRecvMsgSize(math.MaxInt32),
 		grpc.MaxSendMsgSize(math.MaxInt32),
 		grpc.UnaryInterceptor(
-			otgrpc.OpenTracingServerInterceptor(tracer)),
+			grpc_opentracing.UnaryServerInterceptor(opts...)),
 		grpc.StreamInterceptor(
-			otgrpc.OpenTracingStreamServerInterceptor(tracer)))
+			grpc_opentracing.StreamServerInterceptor(opts...)))
 	indexpb.RegisterIndexNodeServer(s.grpcServer, s)
 	go funcutil.CheckGrpcReady(ctx, s.grpcErrChan)
 	if err := s.grpcServer.Serve(lis); err != nil {
@@ -118,10 +118,17 @@ func (s *Server) init() error {
 		if err != nil {
 			err = s.Stop()
 			if err != nil {
-				log.Debug("Init failed, and Stop failed")
+				log.Debug("IndexNode Init failed, and Stop failed")
 			}
 		}
 	}()
+
+	err = s.indexnode.Register()
+	if err != nil {
+		log.Debug("IndexNode Register etcd failed", zap.Error(err))
+		return err
+	}
+	log.Debug("IndexNode Register etcd success")
 
 	s.loopWg.Add(1)
 	go s.startGrpcLoop(Params.Port)
@@ -131,18 +138,19 @@ func (s *Server) init() error {
 		return err
 	}
 
-	indexServiceAddr := Params.IndexServerAddress
-	s.indexServiceClient = grpcindexserviceclient.NewClient(indexServiceAddr)
+	s.indexServiceClient = grpcindexserviceclient.NewClient(indexnode.Params.MetaRootPath, indexnode.Params.EtcdEndpoints, 3*time.Second)
 	err = s.indexServiceClient.Init()
 	if err != nil {
+		log.Debug("IndexNode indexSerticeClient init failed", zap.Error(err))
 		return err
 	}
 	s.indexnode.SetIndexServiceClient(s.indexServiceClient)
 
 	s.indexnode.UpdateStateCode(internalpb.StateCode_Initializing)
-
+	log.Debug("IndexNode", zap.Any("State", internalpb.StateCode_Initializing))
 	err = s.indexnode.Init()
 	if err != nil {
+		log.Debug("IndexNode Init failed", zap.Error(err))
 		return err
 	}
 	return nil
@@ -186,12 +194,8 @@ func (s *Server) GetStatisticsChannel(ctx context.Context, req *internalpb.GetSt
 	return s.indexnode.GetStatisticsChannel(ctx)
 }
 
-func (s *Server) BuildIndex(ctx context.Context, req *indexpb.BuildIndexRequest) (*commonpb.Status, error) {
-	return s.indexnode.BuildIndex(ctx, req)
-}
-
-func (s *Server) DropIndex(ctx context.Context, request *indexpb.DropIndexRequest) (*commonpb.Status, error) {
-	return s.indexnode.DropIndex(ctx, request)
+func (s *Server) CreateIndex(ctx context.Context, req *indexpb.CreateIndexRequest) (*commonpb.Status, error) {
+	return s.indexnode.CreateIndex(ctx, req)
 }
 
 func NewServer(ctx context.Context) (*Server, error) {

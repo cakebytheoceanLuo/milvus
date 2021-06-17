@@ -26,8 +26,10 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
+	"github.com/milvus-io/milvus/internal/proto/planpb"
 	"github.com/milvus-io/milvus/internal/proto/proxypb"
 	"github.com/milvus-io/milvus/internal/proto/querypb"
+	"github.com/milvus-io/milvus/internal/proto/schemapb"
 	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
@@ -141,6 +143,8 @@ func (node *ProxyNode) DropCollection(ctx context.Context, request *milvuspb.Dro
 		Condition:             NewTaskCondition(ctx),
 		DropCollectionRequest: request,
 		masterService:         node.masterService,
+		chMgr:                 node.chMgr,
+		chTicker:              node.chTicker,
 	}
 
 	err := node.sched.DdQueue.Enqueue(dct)
@@ -360,7 +364,7 @@ func (node *ProxyNode) DescribeCollection(ctx context.Context, request *milvuspb
 }
 
 func (node *ProxyNode) GetCollectionStatistics(ctx context.Context, request *milvuspb.GetCollectionStatisticsRequest) (*milvuspb.GetCollectionStatisticsResponse, error) {
-	g := &GetCollectionsStatisticsTask{
+	g := &GetCollectionStatisticsTask{
 		ctx:                            ctx,
 		Condition:                      NewTaskCondition(ctx),
 		GetCollectionStatisticsRequest: request,
@@ -412,6 +416,7 @@ func (node *ProxyNode) ShowCollections(ctx context.Context, request *milvuspb.Sh
 		Condition:              NewTaskCondition(ctx),
 		ShowCollectionsRequest: request,
 		masterService:          node.masterService,
+		queryService:           node.queryService,
 	}
 
 	err := node.sched.DdQueue.Enqueue(sct)
@@ -685,7 +690,52 @@ func (node *ProxyNode) ReleasePartitions(ctx context.Context, request *milvuspb.
 }
 
 func (node *ProxyNode) GetPartitionStatistics(ctx context.Context, request *milvuspb.GetPartitionStatisticsRequest) (*milvuspb.GetPartitionStatisticsResponse, error) {
-	panic("implement me")
+	g := &GetPartitionStatisticsTask{
+		ctx:                           ctx,
+		Condition:                     NewTaskCondition(ctx),
+		GetPartitionStatisticsRequest: request,
+		dataService:                   node.dataService,
+	}
+
+	err := node.sched.DdQueue.Enqueue(g)
+	if err != nil {
+		return &milvuspb.GetPartitionStatisticsResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    err.Error(),
+			},
+		}, nil
+	}
+
+	log.Debug("GetPartitionStatistics",
+		zap.String("role", Params.RoleName),
+		zap.Int64("msgID", request.Base.MsgID),
+		zap.Uint64("timestamp", request.Base.Timestamp),
+		zap.String("db", request.DbName),
+		zap.String("collection", request.CollectionName),
+		zap.String("partition", request.PartitionName))
+	defer func() {
+		log.Debug("GetPartitionStatistics Done",
+			zap.Error(err),
+			zap.String("role", Params.RoleName),
+			zap.Int64("msgID", request.Base.MsgID),
+			zap.Uint64("timestamp", request.Base.Timestamp),
+			zap.String("db", request.DbName),
+			zap.String("collection", request.CollectionName),
+			zap.String("partition", request.PartitionName))
+	}()
+
+	err = g.WaitToFinish()
+	if err != nil {
+		return &milvuspb.GetPartitionStatisticsResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    err.Error(),
+			},
+		}, nil
+	}
+
+	return g.result, nil
 }
 
 func (node *ProxyNode) ShowPartitions(ctx context.Context, request *milvuspb.ShowPartitionsRequest) (*milvuspb.ShowPartitionsResponse, error) {
@@ -883,6 +933,63 @@ func (node *ProxyNode) DropIndex(ctx context.Context, request *milvuspb.DropInde
 	return dit.result, nil
 }
 
+// GetIndexBuildProgress gets index build progress with filed_name and index_name.
+// IndexRows is the num of indexed rows. And TotalRows is the total number of segment rows.
+func (node *ProxyNode) GetIndexBuildProgress(ctx context.Context, request *milvuspb.GetIndexBuildProgressRequest) (*milvuspb.GetIndexBuildProgressResponse, error) {
+	gibpt := &GetIndexBuildProgressTask{
+		ctx:                          ctx,
+		Condition:                    NewTaskCondition(ctx),
+		GetIndexBuildProgressRequest: request,
+		indexService:                 node.indexService,
+		masterService:                node.masterService,
+		dataService:                  node.dataService,
+	}
+
+	err := node.sched.DdQueue.Enqueue(gibpt)
+	if err != nil {
+		return &milvuspb.GetIndexBuildProgressResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    err.Error(),
+			},
+		}, nil
+	}
+
+	log.Debug("GetIndexBuildProgress",
+		zap.String("role", Params.RoleName),
+		zap.Int64("msgID", request.Base.MsgID),
+		zap.Uint64("timestamp", request.Base.Timestamp),
+		zap.String("db", request.DbName),
+		zap.String("collection", request.CollectionName),
+		zap.String("field", request.FieldName),
+		zap.String("index name", request.IndexName))
+	defer func() {
+		log.Debug("GetIndexBuildProgress Done",
+			zap.Error(err),
+			zap.String("role", Params.RoleName),
+			zap.Int64("msgID", request.Base.MsgID),
+			zap.Uint64("timestamp", request.Base.Timestamp),
+			zap.String("db", request.DbName),
+			zap.String("collection", request.CollectionName),
+			zap.String("field", request.FieldName),
+			zap.String("index name", request.IndexName))
+	}()
+
+	err = gibpt.WaitToFinish()
+	if err != nil {
+		return &milvuspb.GetIndexBuildProgressResponse{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    err.Error(),
+			},
+		}, nil
+	}
+	log.Debug("progress", zap.Any("result", gibpt.result))
+	log.Debug("progress", zap.Any("status", gibpt.result.Status))
+
+	return gibpt.result, nil
+}
+
 func (node *ProxyNode) GetIndexState(ctx context.Context, request *milvuspb.GetIndexStateRequest) (*milvuspb.GetIndexStateResponse, error) {
 	dipt := &GetIndexStateTask{
 		ctx:                  ctx,
@@ -940,6 +1047,7 @@ func (node *ProxyNode) Insert(ctx context.Context, request *milvuspb.InsertReque
 		ctx:         ctx,
 		Condition:   NewTaskCondition(ctx),
 		dataService: node.dataService,
+		req:         request,
 		BaseInsertTask: BaseInsertTask{
 			BaseMsg: msgstream.BaseMsg{
 				HashValues: request.HashKeys,
@@ -951,10 +1059,13 @@ func (node *ProxyNode) Insert(ctx context.Context, request *milvuspb.InsertReque
 				},
 				CollectionName: request.CollectionName,
 				PartitionName:  request.PartitionName,
-				RowData:        request.RowData,
+				// RowData: transfer column based request to this
 			},
 		},
 		rowIDAllocator: node.idAllocator,
+		segIDAssigner:  node.segAssigner,
+		chMgr:          node.chMgr,
+		chTicker:       node.chTicker,
 	}
 	if len(it.PartitionName) <= 0 {
 		it.PartitionName = Params.DefaultPartitionName
@@ -1020,6 +1131,7 @@ func (node *ProxyNode) Search(ctx context.Context, request *milvuspb.SearchReque
 		queryMsgStream: node.queryMsgStream,
 		resultBuf:      make(chan []*internalpb.SearchResults),
 		query:          request,
+		chMgr:          node.chMgr,
 	}
 
 	err := node.sched.DqQueue.Enqueue(qt)
@@ -1055,6 +1167,17 @@ func (node *ProxyNode) Search(ctx context.Context, request *milvuspb.SearchReque
 	}()
 
 	err = qt.WaitToFinish()
+	log.Debug("Search Finished",
+		zap.Error(err),
+		zap.String("role", Params.RoleName),
+		zap.Int64("msgID", qt.Base.MsgID),
+		zap.Uint64("timestamp", qt.Base.Timestamp),
+		zap.String("db", request.DbName),
+		zap.String("collection", request.CollectionName),
+		zap.Any("partitions", request.PartitionNames),
+		zap.Any("dsl", request.Dsl),
+		zap.Any("len(PlaceholderGroup)", len(request.PlaceholderGroup)))
+
 	if err != nil {
 		return &milvuspb.SearchResults{
 			Status: &commonpb.Status{
@@ -1065,6 +1188,65 @@ func (node *ProxyNode) Search(ctx context.Context, request *milvuspb.SearchReque
 	}
 
 	return qt.result, nil
+}
+
+func (node *ProxyNode) Retrieve(ctx context.Context, request *milvuspb.RetrieveRequest) (*milvuspb.RetrieveResults, error) {
+	rt := &RetrieveTask{
+		ctx:       ctx,
+		Condition: NewTaskCondition(ctx),
+		RetrieveRequest: &internalpb.RetrieveRequest{
+			Base: &commonpb.MsgBase{
+				MsgType:  commonpb.MsgType_Retrieve,
+				SourceID: Params.ProxyID,
+			},
+			ResultChannelID: strconv.FormatInt(Params.ProxyID, 10),
+		},
+		queryMsgStream: node.queryMsgStream,
+		resultBuf:      make(chan []*internalpb.RetrieveResults),
+		retrieve:       request,
+	}
+
+	err := node.sched.DqQueue.Enqueue(rt)
+	if err != nil {
+		return &milvuspb.RetrieveResults{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    err.Error(),
+			},
+		}, nil
+	}
+
+	log.Debug("Retrieve",
+		zap.String("role", Params.RoleName),
+		zap.Int64("msgID", rt.Base.MsgID),
+		zap.Uint64("timestamp", rt.Base.Timestamp),
+		zap.String("db", request.DbName),
+		zap.String("collection", request.CollectionName),
+		zap.Any("partitions", request.PartitionNames),
+		zap.Any("len(Ids)", len(request.Ids.IdField.(*schemapb.IDs_IntId).IntId.Data)))
+	defer func() {
+		log.Debug("Retrieve Done",
+			zap.Error(err),
+			zap.String("role", Params.RoleName),
+			zap.Int64("msgID", rt.Base.MsgID),
+			zap.Uint64("timestamp", rt.Base.Timestamp),
+			zap.String("db", request.DbName),
+			zap.String("collection", request.CollectionName),
+			zap.Any("partitions", request.PartitionNames),
+			zap.Any("len(Ids)", len(rt.result.Ids.IdField.(*schemapb.IDs_IntId).IntId.Data)))
+	}()
+
+	err = rt.WaitToFinish()
+	if err != nil {
+		return &milvuspb.RetrieveResults{
+			Status: &commonpb.Status{
+				ErrorCode: commonpb.ErrorCode_UnexpectedError,
+				Reason:    err.Error(),
+			},
+		}, nil
+	}
+
+	return rt.result, nil
 }
 
 func (node *ProxyNode) Flush(ctx context.Context, request *milvuspb.FlushRequest) (*commonpb.Status, error) {
@@ -1108,6 +1290,128 @@ func (node *ProxyNode) Flush(ctx context.Context, request *milvuspb.FlushRequest
 	}
 
 	return ft.result, nil
+}
+
+func (node *ProxyNode) Query(ctx context.Context, request *milvuspb.QueryRequest) (*milvuspb.QueryResults, error) {
+	schemaPb, err := globalMetaCache.GetCollectionSchema(ctx, request.CollectionName)
+	if err != nil { // err is not nil if collection not exists
+		return nil, err
+	}
+	schema, err := typeutil.CreateSchemaHelper(schemaPb)
+	if err != nil {
+		return nil, err
+	}
+
+	parseRetrieveTask := func(exprString string) (bool, []int64) {
+		expr, err := parseQueryExpr(schema, exprString)
+		if err != nil {
+			return false, nil
+		}
+
+		switch xExpr := expr.Expr.(type) {
+		case *planpb.Expr_TermExpr:
+			var ids []int64
+			for _, value := range xExpr.TermExpr.Values {
+				switch v := value.Val.(type) {
+				case *planpb.GenericValue_Int64Val:
+					ids = append(ids, v.Int64Val)
+				default:
+					return false, nil
+				}
+			}
+			return xExpr.TermExpr.ColumnInfo.IsPrimaryKey, ids
+		default:
+			return false, nil
+		}
+	}
+
+	isRetrieveTask, ids := parseRetrieveTask(request.Expr)
+
+	if isRetrieveTask {
+		retrieveRequest := &milvuspb.RetrieveRequest{
+			DbName:         request.DbName,
+			CollectionName: request.CollectionName,
+			PartitionNames: request.PartitionNames,
+			Ids: &schemapb.IDs{
+				IdField: &schemapb.IDs_IntId{
+					IntId: &schemapb.LongArray{
+						Data: ids,
+					},
+				},
+			},
+			OutputFields: request.OutputFields,
+		}
+
+		rt := &RetrieveTask{
+			ctx:       ctx,
+			Condition: NewTaskCondition(ctx),
+			RetrieveRequest: &internalpb.RetrieveRequest{
+				Base: &commonpb.MsgBase{
+					MsgType:  commonpb.MsgType_Retrieve,
+					SourceID: Params.ProxyID,
+				},
+				ResultChannelID: strconv.FormatInt(Params.ProxyID, 10),
+			},
+			queryMsgStream: node.queryMsgStream,
+			resultBuf:      make(chan []*internalpb.RetrieveResults),
+			retrieve:       retrieveRequest,
+			chMgr:          node.chMgr,
+		}
+
+		err := node.sched.DqQueue.Enqueue(rt)
+		if err != nil {
+			return &milvuspb.QueryResults{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_UnexpectedError,
+					Reason:    err.Error(),
+				},
+			}, nil
+		}
+
+		log.Debug("Retrieve",
+			zap.String("role", Params.RoleName),
+			zap.Int64("msgID", rt.Base.MsgID),
+			zap.Uint64("timestamp", rt.Base.Timestamp),
+			zap.String("db", retrieveRequest.DbName),
+			zap.String("collection", retrieveRequest.CollectionName),
+			zap.Any("partitions", retrieveRequest.PartitionNames),
+			zap.Any("len(Ids)", len(retrieveRequest.Ids.IdField.(*schemapb.IDs_IntId).IntId.Data)))
+		defer func() {
+			log.Debug("Retrieve Done",
+				zap.Error(err),
+				zap.String("role", Params.RoleName),
+				zap.Int64("msgID", rt.Base.MsgID),
+				zap.Uint64("timestamp", rt.Base.Timestamp),
+				zap.String("db", retrieveRequest.DbName),
+				zap.String("collection", retrieveRequest.CollectionName),
+				zap.Any("partitions", retrieveRequest.PartitionNames),
+				zap.Any("len(Ids)", len(rt.result.Ids.IdField.(*schemapb.IDs_IntId).IntId.Data)))
+		}()
+
+		err = rt.WaitToFinish()
+		if err != nil {
+			return &milvuspb.QueryResults{
+				Status: &commonpb.Status{
+					ErrorCode: commonpb.ErrorCode_UnexpectedError,
+					Reason:    err.Error(),
+				},
+			}, nil
+		}
+
+		return &milvuspb.QueryResults{
+			Status:     rt.result.Status,
+			FieldsData: rt.result.FieldsData,
+		}, nil
+	}
+
+	err = errors.New("Not implemented")
+	return &milvuspb.QueryResults{
+		Status: &commonpb.Status{
+			ErrorCode: commonpb.ErrorCode_UnexpectedError,
+			Reason:    err.Error(),
+		},
+	}, nil
+
 }
 
 func (node *ProxyNode) GetDdChannel(ctx context.Context, request *internalpb.GetDdChannelRequest) (*milvuspb.StringResponse, error) {
@@ -1154,11 +1458,7 @@ func (node *ProxyNode) GetPersistentSegmentInfo(ctx context.Context, req *milvus
 			SegmentID:    info.ID,
 			CollectionID: info.CollectionID,
 			PartitionID:  info.PartitionID,
-			OpenTime:     info.OpenTime,
-			SealedTime:   info.SealedTime,
-			FlushedTime:  info.FlushedTime,
-			NumRows:      info.NumRows,
-			MemSize:      info.MemSize,
+			NumRows:      info.NumOfRows,
 			State:        info.State,
 		}
 	}
@@ -1192,11 +1492,11 @@ func (node *ProxyNode) GetQuerySegmentInfo(ctx context.Context, req *milvuspb.Ge
 		},
 		SegmentIDs: segments,
 	})
-	log.Debug("GetQuerySegmentInfo ", zap.Any("infos", infoResp.Infos), zap.Any("status", infoResp.Status))
 	if err != nil {
 		resp.Status.Reason = err.Error()
 		return resp, nil
 	}
+	log.Debug("GetQuerySegmentInfo ", zap.Any("infos", infoResp.Infos), zap.Any("status", infoResp.Status))
 	if infoResp.Status.ErrorCode != commonpb.ErrorCode_Success {
 		resp.Status.Reason = infoResp.Status.Reason
 		return resp, nil
@@ -1275,6 +1575,54 @@ func (node *ProxyNode) getSegmentsOfCollection(ctx context.Context, dbName strin
 		ret = append(ret, showSegmentResponse.SegmentIDs...)
 	}
 	return ret, nil
+}
+
+func (node *ProxyNode) Dummy(ctx context.Context, req *milvuspb.DummyRequest) (*milvuspb.DummyResponse, error) {
+	failedResponse := &milvuspb.DummyResponse{
+		Response: `{"status": "fail"}`,
+	}
+
+	// TODO(wxyu): change name RequestType to Request
+	drt, err := parseDummyRequestType(req.RequestType)
+	if err != nil {
+		log.Debug("Failed to parse dummy request type")
+		return failedResponse, nil
+	}
+
+	if drt.RequestType == "retrieve" {
+		drr, err := parseDummyRetrieveRequest(req.RequestType)
+		if err != nil {
+			log.Debug("Failed to parse dummy retrieve request")
+			return failedResponse, nil
+		}
+
+		request := &milvuspb.RetrieveRequest{
+			DbName:         drr.DbName,
+			CollectionName: drr.CollectionName,
+			PartitionNames: drr.PartitionNames,
+			Ids: &schemapb.IDs{
+				IdField: &schemapb.IDs_IntId{
+					IntId: &schemapb.LongArray{
+						Data: drr.Ids,
+					},
+				},
+			},
+			OutputFields: drr.OutputFields,
+		}
+
+		_, err = node.Retrieve(ctx, request)
+		if err != nil {
+			log.Debug("Failed to execute dummy retrieve")
+			return failedResponse, err
+		}
+
+		return &milvuspb.DummyResponse{
+			Response: `{"status": "success"}`,
+		}, nil
+	}
+
+	log.Debug("cannot find specify dummy request type")
+	return failedResponse, nil
 }
 
 func (node *ProxyNode) RegisterLink(ctx context.Context, req *milvuspb.RegisterLinkRequest) (*milvuspb.RegisterLinkResponse, error) {

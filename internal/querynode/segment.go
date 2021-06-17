@@ -23,6 +23,7 @@ package querynode
 */
 import "C"
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -31,10 +32,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/zap"
 
-	"errors"
-
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/internal/proto/segcorepb"
 )
 
 type segmentType int32
@@ -52,12 +52,15 @@ type Segment struct {
 	segmentID    UniqueID
 	partitionID  UniqueID
 	collectionID UniqueID
+
+	onService bool
+
+	vChannelID   Channel
 	lastMemSize  int64
 	lastRowCount int64
 
-	once             sync.Once // guards enableIndex
-	enableIndex      bool
-	enableLoadBinLog bool
+	once        sync.Once // guards enableIndex
+	enableIndex bool
 
 	rmMutex          sync.Mutex // guards recentlyModified
 	recentlyModified bool
@@ -110,7 +113,15 @@ func (s *Segment) getType() segmentType {
 	return s.segmentType
 }
 
-func newSegment(collection *Collection, segmentID int64, partitionID UniqueID, collectionID UniqueID, segType segmentType) *Segment {
+func (s *Segment) getOnService() bool {
+	return s.onService
+}
+
+func (s *Segment) setOnService(onService bool) {
+	s.onService = onService
+}
+
+func newSegment(collection *Collection, segmentID int64, partitionID UniqueID, collectionID UniqueID, vChannelID Channel, segType segmentType, onService bool) *Segment {
 	/*
 		CSegmentInterface
 		NewSegment(CCollection collection, uint64_t segment_id, SegmentType seg_type);
@@ -133,13 +144,14 @@ func newSegment(collection *Collection, segmentID int64, partitionID UniqueID, c
 	log.Debug("create segment", zap.Int64("segmentID", segmentID))
 
 	var newSegment = &Segment{
-		segmentPtr:       segmentPtr,
-		segmentType:      segType,
-		segmentID:        segmentID,
-		partitionID:      partitionID,
-		collectionID:     collectionID,
-		indexInfos:       indexInfos,
-		enableLoadBinLog: false,
+		segmentPtr:   segmentPtr,
+		segmentType:  segType,
+		segmentID:    segmentID,
+		partitionID:  partitionID,
+		collectionID: collectionID,
+		vChannelID:   vChannelID,
+		onService:    onService,
+		indexInfos:   indexInfos,
 	}
 
 	return newSegment
@@ -164,10 +176,13 @@ func (s *Segment) getRowCount() int64 {
 		long int
 		getRowCount(CSegmentInterface c_segment);
 	*/
+	segmentPtrIsNil := s.segmentPtr == nil
+	log.Debug("QueryNode::Segment::getRowCount", zap.Any("segmentPtrIsNil", segmentPtrIsNil))
 	if s.segmentPtr == nil {
 		return -1
 	}
 	var rowCount = C.GetRowCount(s.segmentPtr)
+	log.Debug("QueryNode::Segment::getRowCount", zap.Any("rowCount", rowCount))
 	return int64(rowCount)
 }
 
@@ -232,6 +247,16 @@ func (s *Segment) segmentSearch(plan *Plan,
 	}
 
 	return &searchResult, nil
+}
+
+func (s *Segment) segmentGetEntityByIds(plan *RetrievePlan) (*segcorepb.RetrieveResults, error) {
+	resProto := C.GetEntityByIds(s.segmentPtr, plan.RetrievePlanPtr, C.uint64_t(plan.Timestamp))
+	result := new(segcorepb.RetrieveResults)
+	err := HandleCProtoResult(&resProto, result)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *Segment) fillTargetEntry(plan *Plan,
@@ -402,7 +427,7 @@ func (s *Segment) segmentPreInsert(numOfRecords int) (int64, error) {
 		long int
 		PreInsert(CSegmentInterface c_segment, long int size);
 	*/
-	if s.segmentType != segmentTypeGrowing || s.enableLoadBinLog {
+	if s.segmentType != segmentTypeGrowing {
 		return 0, nil
 	}
 	var offset int64
@@ -441,9 +466,10 @@ func (s *Segment) segmentInsert(offset int64, entityIDs *[]UniqueID, timestamps 
 		           int sizeof_per_row,
 		           signed long int count);
 	*/
-	if s.segmentType != segmentTypeGrowing || s.enableLoadBinLog {
+	if s.segmentType != segmentTypeGrowing {
 		return nil
 	}
+	log.Debug("QueryNode::Segment::segmentInsert:", zap.Any("s.sgmentPtr", s.segmentPtr))
 
 	if s.segmentPtr == nil {
 		return errors.New("null seg core pointer")
@@ -467,7 +493,7 @@ func (s *Segment) segmentInsert(offset int64, entityIDs *[]UniqueID, timestamps 
 	var cTimestampsPtr = (*C.ulong)(&(*timestamps)[0])
 	var cSizeofPerRow = C.int(sizeofPerRow)
 	var cRawDataVoidPtr = unsafe.Pointer(&rawData[0])
-
+	log.Debug("QueryNode::Segment::InsertBegin", zap.Any("cNumOfRows", cNumOfRows))
 	var status = C.Insert(s.segmentPtr,
 		cOffset,
 		cNumOfRows,
@@ -478,11 +504,14 @@ func (s *Segment) segmentInsert(offset int64, entityIDs *[]UniqueID, timestamps 
 		cNumOfRows)
 
 	errorCode := status.error_code
+	log.Debug("QueryNode::Segment::InsertEnd", zap.Any("errorCode", errorCode))
 
 	if errorCode != 0 {
 		errorMsg := C.GoString(status.error_msg)
 		defer C.free(unsafe.Pointer(status.error_msg))
-		return errors.New("Insert failed, C runtime error detected, error code = " + strconv.Itoa(int(errorCode)) + ", error msg = " + errorMsg)
+		err := errors.New("Insert failed, C runtime error detected, error code = " + strconv.Itoa(int(errorCode)) + ", error msg = " + errorMsg)
+		log.Debug("QueryNode::Segment::InsertEnd failed", zap.Error(err))
+		return err
 	}
 
 	s.setRecentlyModified(true)
@@ -709,8 +738,4 @@ func (s *Segment) dropSegmentIndex(fieldID int64) error {
 	log.Debug("dropSegmentIndex done", zap.Int64("fieldID", fieldID), zap.Int64("segmentID", s.ID()))
 
 	return nil
-}
-
-func (s *Segment) setLoadBinLogEnable(enable bool) {
-	s.enableLoadBinLog = enable
 }

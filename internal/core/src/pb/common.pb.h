@@ -174,12 +174,13 @@ enum SegmentState : int {
   Growing = 2,
   Sealed = 3,
   Flushed = 4,
+  Flushing = 5,
   SegmentState_INT_MIN_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::min(),
   SegmentState_INT_MAX_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::max()
 };
 bool SegmentState_IsValid(int value);
 constexpr SegmentState SegmentState_MIN = SegmentStateNone;
-constexpr SegmentState SegmentState_MAX = Flushed;
+constexpr SegmentState SegmentState_MAX = Flushing;
 constexpr int SegmentState_ARRAYSIZE = SegmentState_MAX + 1;
 
 const ::PROTOBUF_NAMESPACE_ID::EnumDescriptor* SegmentState_descriptor();
@@ -215,6 +216,10 @@ enum MsgType : int {
   ReleasePartitions = 206,
   ShowSegments = 250,
   DescribeSegment = 251,
+  LoadSegments = 252,
+  ReleaseSegments = 253,
+  HandoffSegments = 254,
+  LoadBalanceSegments = 255,
   CreateIndex = 300,
   DescribeIndex = 301,
   DropIndex = 302,
@@ -224,8 +229,15 @@ enum MsgType : int {
   Search = 500,
   SearchResult = 501,
   GetIndexState = 502,
-  GetCollectionStatistics = 503,
-  GetPartitionStatistics = 504,
+  GetIndexBuildProgress = 503,
+  GetCollectionStatistics = 504,
+  GetPartitionStatistics = 505,
+  Retrieve = 506,
+  RetrieveResult = 507,
+  WatchDmChannels = 508,
+  RemoveDmChannels = 509,
+  WatchQueryChannels = 510,
+  RemoveQueryChannels = 511,
   SegmentInfo = 600,
   TimeTick = 1200,
   QueryNodeStats = 1201,
@@ -235,12 +247,13 @@ enum MsgType : int {
   AllocateSegment = 1205,
   SegmentStatistics = 1206,
   SegmentFlushDone = 1207,
+  DataNodeTt = 1208,
   MsgType_INT_MIN_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::min(),
   MsgType_INT_MAX_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::max()
 };
 bool MsgType_IsValid(int value);
 constexpr MsgType MsgType_MIN = Undefined;
-constexpr MsgType MsgType_MAX = SegmentFlushDone;
+constexpr MsgType MsgType_MAX = DataNodeTt;
 constexpr int MsgType_ARRAYSIZE = MsgType_MAX + 1;
 
 const ::PROTOBUF_NAMESPACE_ID::EnumDescriptor* MsgType_descriptor();
@@ -256,6 +269,31 @@ inline bool MsgType_Parse(
     const std::string& name, MsgType* value) {
   return ::PROTOBUF_NAMESPACE_ID::internal::ParseNamedEnum<MsgType>(
     MsgType_descriptor(), name, value);
+}
+enum DslType : int {
+  Dsl = 0,
+  BoolExprV1 = 1,
+  DslType_INT_MIN_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::min(),
+  DslType_INT_MAX_SENTINEL_DO_NOT_USE_ = std::numeric_limits<::PROTOBUF_NAMESPACE_ID::int32>::max()
+};
+bool DslType_IsValid(int value);
+constexpr DslType DslType_MIN = Dsl;
+constexpr DslType DslType_MAX = BoolExprV1;
+constexpr int DslType_ARRAYSIZE = DslType_MAX + 1;
+
+const ::PROTOBUF_NAMESPACE_ID::EnumDescriptor* DslType_descriptor();
+template<typename T>
+inline const std::string& DslType_Name(T enum_t_value) {
+  static_assert(::std::is_same<T, DslType>::value ||
+    ::std::is_integral<T>::value,
+    "Incorrect type passed to function DslType_Name.");
+  return ::PROTOBUF_NAMESPACE_ID::internal::NameOfEnum(
+    DslType_descriptor(), enum_t_value);
+}
+inline bool DslType_Parse(
+    const std::string& name, DslType* value) {
+  return ::PROTOBUF_NAMESPACE_ID::internal::ParseNamedEnum<DslType>(
+    DslType_descriptor(), name, value);
 }
 // ===================================================================
 
@@ -1580,6 +1618,11 @@ template <> struct is_proto_enum< ::milvus::proto::common::MsgType> : ::std::tru
 template <>
 inline const EnumDescriptor* GetEnumDescriptor< ::milvus::proto::common::MsgType>() {
   return ::milvus::proto::common::MsgType_descriptor();
+}
+template <> struct is_proto_enum< ::milvus::proto::common::DslType> : ::std::true_type {};
+template <>
+inline const EnumDescriptor* GetEnumDescriptor< ::milvus::proto::common::DslType>() {
+  return ::milvus::proto::common::DslType_descriptor();
 }
 
 PROTOBUF_NAMESPACE_CLOSE

@@ -18,7 +18,6 @@ import (
 	"net"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/milvus-io/milvus/internal/logutil"
 
@@ -26,15 +25,14 @@ import (
 
 	"google.golang.org/grpc"
 
+	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
+	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/milvus-io/milvus/internal/dataservice"
-	msc "github.com/milvus-io/milvus/internal/distributed/masterservice/client"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/msgstream"
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 	"github.com/milvus-io/milvus/internal/util/trace"
-	otgrpc "github.com/opentracing-contrib/go-grpc"
-	"github.com/opentracing/opentracing-go"
 
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
@@ -56,6 +54,7 @@ type Server struct {
 	closer io.Closer
 }
 
+// NewServer new data service grpc server
 func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) {
 	var err error
 	ctx1, cancel := context.WithCancel(ctx)
@@ -65,7 +64,6 @@ func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) 
 		cancel:      cancel,
 		grpcErrChan: make(chan error),
 	}
-
 	s.dataService, err = dataservice.CreateServer(s.ctx, factory)
 	if err != nil {
 		return nil, err
@@ -80,41 +78,36 @@ func (s *Server) init() error {
 	closer := trace.InitTracing("data_service")
 	s.closer = closer
 
-	s.wg.Add(1)
-	go s.startGrpcLoop(Params.Port)
-	// wait for grpc server loop start
-	if err := <-s.grpcErrChan; err != nil {
+	dataservice.Params.Init()
+	dataservice.Params.IP = Params.IP
+	dataservice.Params.Port = Params.Port
+
+	err := s.dataService.Register()
+	if err != nil {
+		log.Debug("DataService Register etcd failed", zap.Error(err))
+		return err
+	}
+	log.Debug("DataService Register etcd success")
+
+	err = s.startGrpc()
+	if err != nil {
+		log.Debug("DataService startGrpc failed", zap.Error(err))
 		return err
 	}
 
-	log.Debug("master address", zap.String("address", Params.MasterAddress))
-	client, err := msc.NewClient(Params.MasterAddress, 10*time.Second)
-	if err != nil {
-		panic(err)
-	}
-	log.Debug("master client create complete")
-	if err = client.Init(); err != nil {
-		panic(err)
-	}
-	if err = client.Start(); err != nil {
-		panic(err)
-	}
-	s.dataService.UpdateStateCode(internalpb.StateCode_Initializing)
-
-	ctx := context.Background()
-	err = funcutil.WaitForComponentInitOrHealthy(ctx, client, "MasterService", 1000000, time.Millisecond*200)
-
-	if err != nil {
-		panic(err)
-	}
-	s.dataService.SetMasterClient(client)
-
-	dataservice.Params.Init()
 	if err := s.dataService.Init(); err != nil {
 		log.Error("dataService init error", zap.Error(err))
 		return err
 	}
 	return nil
+}
+
+func (s *Server) startGrpc() error {
+	s.wg.Add(1)
+	go s.startGrpcLoop(Params.Port)
+	// wait for grpc server loop start
+	err := <-s.grpcErrChan
+	return err
 }
 
 func (s *Server) startGrpcLoop(grpcPort int) {
@@ -132,16 +125,17 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 	ctx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
-	tracer := opentracing.GlobalTracer()
+	opts := trace.GetInterceptorOpts()
 	s.grpcServer = grpc.NewServer(
 		grpc.MaxRecvMsgSize(math.MaxInt32),
 		grpc.MaxSendMsgSize(math.MaxInt32),
 		grpc.UnaryInterceptor(
-			otgrpc.OpenTracingServerInterceptor(tracer)),
+			grpc_opentracing.UnaryServerInterceptor(opts...)),
 		grpc.StreamInterceptor(
-			otgrpc.OpenTracingStreamServerInterceptor(tracer)))
+			grpc_opentracing.StreamServerInterceptor(opts...)))
+	//grpc.UnaryInterceptor(grpc_prometheus.UnaryServerInterceptor))
 	datapb.RegisterDataServiceServer(s.grpcServer, s)
-
+	grpc_prometheus.Register(s.grpcServer)
 	go funcutil.CheckGrpcReady(ctx, s.grpcErrChan)
 	if err := s.grpcServer.Serve(lis); err != nil {
 		s.grpcErrChan <- err
@@ -176,11 +170,10 @@ func (s *Server) Stop() error {
 }
 
 func (s *Server) Run() error {
-
 	if err := s.init(); err != nil {
 		return err
 	}
-	log.Debug("dataservice init done ...")
+	log.Debug("DataService init done ...")
 
 	if err := s.start(); err != nil {
 		return err
@@ -242,4 +235,13 @@ func (s *Server) GetPartitionStatistics(ctx context.Context, req *datapb.GetPart
 
 func (s *Server) GetSegmentInfoChannel(ctx context.Context, req *datapb.GetSegmentInfoChannelRequest) (*milvuspb.StringResponse, error) {
 	return s.dataService.GetSegmentInfoChannel(ctx)
+}
+
+//SaveBinlogPaths implement DataServiceServer, saves segment, collection binlog according to datanode request
+func (s *Server) SaveBinlogPaths(ctx context.Context, req *datapb.SaveBinlogPathsRequest) (*commonpb.Status, error) {
+	return s.dataService.SaveBinlogPaths(ctx, req)
+}
+
+func (s *Server) GetRecoveryInfo(ctx context.Context, req *datapb.GetRecoveryInfoRequest) (*datapb.GetRecoveryInfoResponse, error) {
+	return s.dataService.GetRecoveryInfo(ctx, req)
 }

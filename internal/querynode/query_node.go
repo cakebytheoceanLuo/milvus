@@ -29,7 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
-	"sync"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -41,6 +41,8 @@ import (
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	queryPb "github.com/milvus-io/milvus/internal/proto/querypb"
 	"github.com/milvus-io/milvus/internal/types"
+	"github.com/milvus-io/milvus/internal/util/sessionutil"
+	"github.com/milvus-io/milvus/internal/util/typeutil"
 )
 
 type QueryNode struct {
@@ -50,15 +52,13 @@ type QueryNode struct {
 	QueryNodeID UniqueID
 	stateCode   atomic.Value
 
-	replica ReplicaInterface
+	// internal components
+	historical *historical
+	streaming  *streaming
 
 	// internal services
-	metaService      *metaService
-	searchService    *searchService
-	loadService      *loadService
-	statsService     *statsService
-	dsServicesMu     sync.Mutex // guards dataSyncServices
-	dataSyncServices map[UniqueID]*dataSyncService
+	searchService   *searchService
+	retrieveService *retrieveService
 
 	// clients
 	masterService types.MasterService
@@ -68,6 +68,8 @@ type QueryNode struct {
 
 	msFactory msgstream.Factory
 	scheduler *taskScheduler
+
+	session *sessionutil.Session
 }
 
 func NewQueryNode(ctx context.Context, queryNodeID UniqueID, factory msgstream.Factory) *QueryNode {
@@ -77,18 +79,14 @@ func NewQueryNode(ctx context.Context, queryNodeID UniqueID, factory msgstream.F
 		queryNodeLoopCtx:    ctx1,
 		queryNodeLoopCancel: cancel,
 		QueryNodeID:         queryNodeID,
-
-		dataSyncServices: make(map[UniqueID]*dataSyncService),
-		metaService:      nil,
-		searchService:    nil,
-		statsService:     nil,
-
-		msFactory: factory,
+		searchService:       nil,
+		retrieveService:     nil,
+		msFactory:           factory,
 	}
 
 	node.scheduler = newTaskScheduler(ctx1)
-	node.replica = newCollectionReplica()
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
+
 	return node
 }
 
@@ -97,24 +95,35 @@ func NewQueryNodeWithoutID(ctx context.Context, factory msgstream.Factory) *Quer
 	node := &QueryNode{
 		queryNodeLoopCtx:    ctx1,
 		queryNodeLoopCancel: cancel,
-
-		dataSyncServices: make(map[UniqueID]*dataSyncService),
-		metaService:      nil,
-		searchService:    nil,
-		statsService:     nil,
-
-		msFactory: factory,
+		searchService:       nil,
+		retrieveService:     nil,
+		msFactory:           factory,
 	}
 
 	node.scheduler = newTaskScheduler(ctx1)
-	node.replica = newCollectionReplica()
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 
 	return node
 }
 
+// Register register query node at etcd
+func (node *QueryNode) Register() error {
+	node.session = sessionutil.NewSession(node.queryNodeLoopCtx, Params.MetaRootPath, Params.EtcdEndpoints)
+	node.session.Init(typeutil.QueryNodeRole, Params.QueryNodeIP+":"+strconv.FormatInt(Params.QueryNodePort, 10), false)
+	Params.QueryNodeID = node.session.ServerID
+	return nil
+}
+
 func (node *QueryNode) Init() error {
 	ctx := context.Background()
+
+	node.historical = newHistorical(node.queryNodeLoopCtx,
+		node.masterService,
+		node.dataService,
+		node.indexService,
+		node.msFactory)
+	node.streaming = newStreaming(node.queryNodeLoopCtx, node.msFactory)
+
 	C.SegcoreInit()
 	registerReq := &queryPb.RegisterNodeRequest{
 		Base: &commonpb.MsgBase{
@@ -128,11 +137,14 @@ func (node *QueryNode) Init() error {
 
 	resp, err := node.queryService.RegisterNode(ctx, registerReq)
 	if err != nil {
+		log.Debug("QueryNode RegisterNode failed", zap.Error(err))
 		panic(err)
 	}
 	if resp.Status.ErrorCode != commonpb.ErrorCode_Success {
+		log.Debug("QueryNode RegisterNode failed", zap.Any("Reason", resp.Status.Reason))
 		panic(resp.Status.Reason)
 	}
+	log.Debug("QueryNode RegisterNode success")
 
 	for _, kv := range resp.InitParams.StartParams {
 		switch kv.Key {
@@ -140,12 +152,16 @@ func (node *QueryNode) Init() error {
 			Params.StatsChannelName = kv.Value
 		case "TimeTickChannelName":
 			Params.QueryTimeTickChannelName = kv.Value
+		case "SearchChannelName":
+			Params.SearchChannelNames = append(Params.SearchChannelNames, kv.Value)
+		case "SearchResultChannelName":
+			Params.SearchResultChannelNames = append(Params.SearchResultChannelNames, kv.Value)
 		default:
 			return fmt.Errorf("Invalid key: %v", kv.Key)
 		}
 	}
 
-	log.Debug("", zap.Int64("QueryNodeID", Params.QueryNodeID))
+	log.Debug("QueryNode Init ", zap.Int64("QueryNodeID", Params.QueryNodeID), zap.Any("searchChannelNames", Params.SearchChannelNames))
 
 	if node.masterService == nil {
 		log.Error("null master service detected")
@@ -174,17 +190,24 @@ func (node *QueryNode) Start() error {
 	}
 
 	// init services and manager
-	node.searchService = newSearchService(node.queryNodeLoopCtx, node.replica, node.msFactory)
-	node.loadService = newLoadService(node.queryNodeLoopCtx, node.masterService, node.dataService, node.indexService, node.replica)
-	node.statsService = newStatsService(node.queryNodeLoopCtx, node.replica, node.loadService.segLoader.indexLoader.fieldStatsChan, node.msFactory)
+	// TODO: pass node.streaming.replica to search service
+	node.searchService = newSearchService(node.queryNodeLoopCtx,
+		node.historical,
+		node.streaming,
+		node.msFactory)
+
+	node.retrieveService = newRetrieveService(node.queryNodeLoopCtx,
+		node.historical,
+		node.streaming,
+		node.msFactory,
+	)
 
 	// start task scheduler
 	go node.scheduler.Start()
 
 	// start services
-	go node.searchService.start()
-	go node.loadService.start()
-	go node.statsService.start()
+	go node.retrieveService.start()
+	go node.historical.start()
 	node.UpdateStateCode(internalpb.StateCode_Healthy)
 	return nil
 }
@@ -193,23 +216,18 @@ func (node *QueryNode) Stop() error {
 	node.UpdateStateCode(internalpb.StateCode_Abnormal)
 	node.queryNodeLoopCancel()
 
-	// free collectionReplica
-	node.replica.freeAll()
-
 	// close services
-	for _, dsService := range node.dataSyncServices {
-		if dsService != nil {
-			dsService.close()
-		}
+	if node.historical != nil {
+		node.historical.close()
+	}
+	if node.streaming != nil {
+		node.streaming.close()
 	}
 	if node.searchService != nil {
 		node.searchService.close()
 	}
-	if node.loadService != nil {
-		node.loadService.close()
-	}
-	if node.statsService != nil {
-		node.statsService.close()
+	if node.retrieveService != nil {
+		node.retrieveService.close()
 	}
 	return nil
 }
@@ -248,30 +266,4 @@ func (node *QueryNode) SetDataService(data types.DataService) error {
 	}
 	node.dataService = data
 	return nil
-}
-
-func (node *QueryNode) getDataSyncService(collectionID UniqueID) (*dataSyncService, error) {
-	node.dsServicesMu.Lock()
-	defer node.dsServicesMu.Unlock()
-	ds, ok := node.dataSyncServices[collectionID]
-	if !ok {
-		return nil, errors.New("cannot found dataSyncService, collectionID =" + fmt.Sprintln(collectionID))
-	}
-	return ds, nil
-}
-
-func (node *QueryNode) addDataSyncService(collectionID UniqueID, ds *dataSyncService) error {
-	node.dsServicesMu.Lock()
-	defer node.dsServicesMu.Unlock()
-	if _, ok := node.dataSyncServices[collectionID]; ok {
-		return errors.New("dataSyncService has been existed, collectionID =" + fmt.Sprintln(collectionID))
-	}
-	node.dataSyncServices[collectionID] = ds
-	return nil
-}
-
-func (node *QueryNode) removeDataSyncService(collectionID UniqueID) {
-	node.dsServicesMu.Lock()
-	defer node.dsServicesMu.Unlock()
-	delete(node.dataSyncServices, collectionID)
 }

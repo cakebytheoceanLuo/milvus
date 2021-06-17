@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/stretchr/testify/assert"
 )
@@ -173,19 +174,14 @@ func TestMeta_Basic(t *testing.T) {
 		assert.EqualValues(t, 1, len(segIDs))
 		assert.Contains(t, segIDs, segID1_1)
 
-		// check OpenSegment/SealSegment/FlushSegment
-		err = meta.OpenSegment(segID0_0, 100)
+		err = meta.SealSegment(segID0_0)
 		assert.Nil(t, err)
-		err = meta.SealSegment(segID0_0, 200)
-		assert.Nil(t, err)
-		err = meta.FlushSegment(segID0_0, 300)
+		err = meta.FlushSegment(segID0_0)
 		assert.Nil(t, err)
 
 		info0_0, err = meta.GetSegment(segID0_0)
 		assert.Nil(t, err)
-		assert.NotZero(t, info0_0.OpenTime)
-		assert.NotZero(t, info0_0.SealedTime)
-		assert.NotZero(t, info0_0.FlushedTime)
+		assert.EqualValues(t, commonpb.SegmentState_Flushed, info0_0.State)
 
 		err = meta.DropPartition(collID, partID0)
 		assert.Nil(t, err)
@@ -202,60 +198,32 @@ func TestMeta_Basic(t *testing.T) {
 		nums, err := meta.GetNumRowsOfCollection(collID)
 		assert.Nil(t, err)
 		assert.EqualValues(t, 0, nums)
-		memSize, err := meta.GetMemSizeOfCollection(collID)
-		assert.Nil(t, err)
-		assert.EqualValues(t, 0, memSize)
 
 		// add seg1 with 100 rows
 		segID0, err := mockAllocator.allocID()
 		assert.Nil(t, err)
 		segInfo0, err := BuildSegment(collID, partID0, segID0, channelName)
 		assert.Nil(t, err)
-		segInfo0.NumRows = rowCount0
-		segInfo0.MemSize = rowCount0 * dim * 4
+		segInfo0.NumOfRows = rowCount0
 		err = meta.AddSegment(segInfo0)
 		assert.Nil(t, err)
-
-		// update seg1 to 300 rows
-		segInfo0.NumRows = rowCount1
-		segInfo0.MemSize = rowCount1 * dim * 4
-		err = meta.UpdateSegment(segInfo0)
-		assert.Nil(t, err)
-
-		nums, err = meta.GetNumRowsOfCollection(collID)
-		assert.Nil(t, err)
-		assert.EqualValues(t, rowCount1, nums)
-		memSize, err = meta.GetMemSizeOfCollection(collID)
-		assert.Nil(t, err)
-		assert.EqualValues(t, rowCount1*dim*4, memSize)
-
-		// check update non-exist segment
-		segInfoNonExist := segInfo0
-		segInfoNonExist.ID, err = mockAllocator.allocID()
-		assert.Nil(t, err)
-		err = meta.UpdateSegment(segInfo0)
-		assert.NotNil(t, err)
 
 		// add seg2 with 300 rows
 		segID1, err := mockAllocator.allocID()
 		assert.Nil(t, err)
 		segInfo1, err := BuildSegment(collID, partID0, segID1, channelName)
 		assert.Nil(t, err)
-		segInfo1.NumRows = rowCount1
-		segInfo1.MemSize = rowCount1 * dim * 4
+		segInfo1.NumOfRows = rowCount1
 		err = meta.AddSegment(segInfo1)
 		assert.Nil(t, err)
 
 		// check partition/collection statistics
 		nums, err = meta.GetNumRowsOfPartition(collID, partID0)
 		assert.Nil(t, err)
-		assert.EqualValues(t, (rowCount1 + rowCount1), nums)
+		assert.EqualValues(t, (rowCount0 + rowCount1), nums)
 		nums, err = meta.GetNumRowsOfCollection(collID)
 		assert.Nil(t, err)
-		assert.EqualValues(t, (rowCount1 + rowCount1), nums)
-		memSize, err = meta.GetMemSizeOfCollection(collID)
-		assert.Nil(t, err)
-		assert.EqualValues(t, (rowCount1+rowCount1)*dim*4, memSize)
+		assert.EqualValues(t, (rowCount0 + rowCount1), nums)
 	})
 
 	t.Run("Test Invalid", func(t *testing.T) {
@@ -288,19 +256,42 @@ func TestMeta_Basic(t *testing.T) {
 		err = meta.DropSegment(segIDInvalid)
 		assert.NotNil(t, err)
 
-		// check open non-exist segment
-		err = meta.OpenSegment(segIDInvalid, 100)
-		assert.NotNil(t, err)
-
 		// check seal non-exist segment
-		err = meta.SealSegment(segIDInvalid, 200)
+		err = meta.SealSegment(segIDInvalid)
 		assert.NotNil(t, err)
 
 		// check flush non-exist segment
-		err = meta.FlushSegment(segIDInvalid, 300)
+		err = meta.FlushSegment(segIDInvalid)
 		assert.NotNil(t, err)
 
 		err = meta.DropCollection(collID)
 		assert.Nil(t, err)
 	})
+}
+
+func TestGetUnFlushedSegments(t *testing.T) {
+	mockAllocator := newMockAllocator()
+	meta, err := newMemoryMeta(mockAllocator)
+	assert.Nil(t, err)
+	err = meta.AddSegment(&datapb.SegmentInfo{
+		ID:           0,
+		CollectionID: 0,
+		PartitionID:  0,
+		State:        commonpb.SegmentState_Growing,
+	})
+	assert.Nil(t, err)
+	err = meta.AddSegment(&datapb.SegmentInfo{
+		ID:           1,
+		CollectionID: 0,
+		PartitionID:  0,
+		State:        commonpb.SegmentState_Flushed,
+	})
+	assert.Nil(t, err)
+
+	segments := meta.GetUnFlushedSegments()
+	assert.Nil(t, err)
+
+	assert.EqualValues(t, 1, len(segments))
+	assert.EqualValues(t, 0, segments[0].ID)
+	assert.NotEqualValues(t, commonpb.SegmentState_Flushed, segments[0].State)
 }

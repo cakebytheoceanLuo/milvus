@@ -1,36 +1,97 @@
 pull_request_rules:
-  - name: add auto-merge label if the title does not contain “[WIP]”
+  - name: Test passed for code changed
     conditions:
       - base=master
-      - -title~=(?i)\[wip\]
+      - "status-success=Code Checker AMD64 Ubuntu 18.04"
+      - "status-success=Build and test AMD64 Ubuntu 18.04"
+      - "status-success=continuous-integration/jenkins/pr-merge"
     actions:
       label:
         add:
-          - "PR | automerge"
+          - ci-passed
 
-  - name: automatic merge for master when ci passed and the title does not contain “[WIP]”
+  - name: Test passed for tests changed
     conditions:
       - base=master
-      - -title~=(?i)\[wip\]
-      - "label=PR | automerge"
-      - "#approved-reviews-by>=1"
-      - "#changes-requested-reviews-by=0"
-      - "status-success=DCO"
+      - -files~=^(?!tests).+
       - "status-success=continuous-integration/jenkins/pr-merge"
-      - "status-success=AMD64 Ubuntu 18.04"
     actions:
-      merge:
-        method: squash
+      label:
+        add:
+          - ci-passed
 
-  - name: automatic merge for master when document files changed only and the title does not contain “[WIP]”
+  - name: Test passed for tests20 changed
     conditions:
       - base=master
-      - -title~=(?i)\[wip\]
-      - "label=PR | automerge"
-      - "#approved-reviews-by>=1"
-      - "#changes-requested-reviews-by=0"
-      - "status-success=DCO"
+      - -files~=^(?!tests20).+
+    actions:
+      label:
+        add:
+          - ci-passed
+
+  - name: Test passed for document changed
+    conditions:
+      - base=master
+      - -files~=^[^\.]+$
       - -files~=\.(?!md|png)
     actions:
-      merge:
-        method: squash
+      label:
+        add:
+          - ci-passed
+
+  - name: Test passed for mergify changed
+    conditions:
+      - base=master
+      - -files~=^(?!\.github\/mergify\.yml).*$
+    actions:
+      label:
+        add:
+          - ci-passed
+
+  - name: Remove ci-passed when code check failed
+    conditions:
+      - base=master
+      - "check-failure=Code Checker AMD64 Ubuntu 18.04"
+    actions:
+      label:
+        remove:
+          - ci-passed
+
+  - name: Remove ci-passed when unittest failed
+    conditions:
+      - base=master
+      - "check-failure=Build and test AMD64 Ubuntu 18.04"
+    actions:
+      label:
+        remove:
+          - ci-passed
+
+  - name: Remove ci-passed when ci failed
+    conditions:
+      - base=master
+      - "check-failure=continuous-integration/jenkins/pr-merge"
+    actions:
+      label:
+        remove:
+          - ci-passed
+
+  - name: Remove ci-passed when ci pending
+    conditions:
+      - base=master
+      - "check-pending=continuous-integration/jenkins/pr-merge"
+    actions:
+      label:
+        remove:
+          - ci-passed
+
+# ONLY for recovery2 branch
+  - name: Test passed for code changed
+    conditions:
+      - base=recovery2
+      - "status-success=Code Checker AMD64 Ubuntu 18.04"
+      - "status-success=Build and test AMD64 Ubuntu 18.04"
+      - "status-success=continuous-integration/jenkins/pr-merge"
+    actions:
+      label:
+        add:
+          - ci-passed

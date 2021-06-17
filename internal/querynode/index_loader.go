@@ -376,7 +376,7 @@ func newIndexLoader(ctx context.Context, masterService types.MasterService, inde
 		replica: replica,
 
 		fieldIndexes:   make(map[string][]*internalpb.IndexStats),
-		fieldStatsChan: make(chan []*internalpb.FieldStats, 1),
+		fieldStatsChan: make(chan []*internalpb.FieldStats, 1024),
 
 		masterService: masterService,
 		indexService:  indexService,

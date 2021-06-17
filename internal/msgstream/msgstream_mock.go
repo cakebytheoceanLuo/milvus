@@ -39,6 +39,10 @@ func (ms *SimpleMsgStream) AsProducer(channels []string) {
 func (ms *SimpleMsgStream) AsConsumer(channels []string, subName string) {
 }
 
+func (ms *SimpleMsgStream) ComputeProduceChannelIndexes(tsMsgs []TsMsg) [][]int32 {
+	return nil
+}
+
 func (ms *SimpleMsgStream) SetRepackFunc(repackFunc RepackFunc) {
 }
 
@@ -72,6 +76,10 @@ func (ms *SimpleMsgStream) Broadcast(pack *MsgPack) error {
 	return nil
 }
 
+func (ms *SimpleMsgStream) GetProduceChannels() []string {
+	return nil
+}
+
 func (ms *SimpleMsgStream) Consume() *MsgPack {
 	if ms.getMsgCount() <= 0 {
 		return nil
@@ -82,7 +90,7 @@ func (ms *SimpleMsgStream) Consume() *MsgPack {
 	return <-ms.msgChan
 }
 
-func (ms *SimpleMsgStream) Seek(offset *MsgPosition) error {
+func (ms *SimpleMsgStream) Seek(offset []*MsgPosition) error {
 	return nil
 }
 

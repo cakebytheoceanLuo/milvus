@@ -13,8 +13,8 @@ package indexservice
 
 import (
 	"context"
-	"errors"
 	"strconv"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -28,6 +28,7 @@ import (
 func (i *IndexService) removeNode(nodeID UniqueID) {
 	i.nodeLock.Lock()
 	defer i.nodeLock.Unlock()
+	log.Debug("IndexService", zap.Any("Remove node with ID", nodeID))
 	i.nodeClients.Remove(nodeID)
 }
 
@@ -35,13 +36,15 @@ func (i *IndexService) addNode(nodeID UniqueID, req *indexpb.RegisterNodeRequest
 	i.nodeLock.Lock()
 	defer i.nodeLock.Unlock()
 
+	log.Debug("IndexService addNode", zap.Any("nodeID", nodeID), zap.Any("node address", req.Address))
+
 	if i.nodeClients.CheckAddressExist(req.Address) {
-		errMsg := "Register IndexNode fatal, address conflict with nodeID:%d 's address" + strconv.FormatInt(nodeID, 10)
-		return errors.New(errMsg)
+		log.Debug("IndexService", zap.Any("Node client already exist with ID:", nodeID))
+		return nil
 	}
 
 	nodeAddress := req.Address.Ip + ":" + strconv.FormatInt(req.Address.Port, 10)
-	nodeClient, err := grpcindexnodeclient.NewClient(nodeAddress)
+	nodeClient, err := grpcindexnodeclient.NewClient(nodeAddress, 3*time.Second)
 	if err != nil {
 		return err
 	}
@@ -70,20 +73,13 @@ func (i *IndexService) prepareNodeInitParams() []*commonpb.KeyValuePair {
 }
 
 func (i *IndexService) RegisterNode(ctx context.Context, req *indexpb.RegisterNodeRequest) (*indexpb.RegisterNodeResponse, error) {
-	log.Debug("indexservice", zap.Any("register index node, node address = ", req.Address))
+	log.Debug("indexservice", zap.Any("register index node, node address = ", req.Address), zap.Any("node ID = ", req.NodeID))
 	ret := &indexpb.RegisterNodeResponse{
 		Status: &commonpb.Status{
 			ErrorCode: commonpb.ErrorCode_UnexpectedError,
 		},
 	}
-
-	nodeID, err := i.idAllocator.AllocOne()
-	if err != nil {
-		ret.Status.Reason = "IndexService:RegisterNode Failed to acquire NodeID"
-		return ret, nil
-	}
-
-	err = i.addNode(nodeID, req)
+	err := i.addNode(req.NodeID, req)
 	if err != nil {
 		ret.Status.Reason = err.Error()
 		return ret, nil
@@ -92,7 +88,7 @@ func (i *IndexService) RegisterNode(ctx context.Context, req *indexpb.RegisterNo
 	ret.Status.ErrorCode = commonpb.ErrorCode_Success
 	params := i.prepareNodeInitParams()
 	ret.InitParams = &internalpb.InitParams{
-		NodeID:      nodeID,
+		NodeID:      req.NodeID,
 		StartParams: params,
 	}
 	return ret, nil

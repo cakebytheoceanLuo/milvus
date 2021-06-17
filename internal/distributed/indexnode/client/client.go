@@ -13,13 +13,14 @@ package grpcindexnodeclient
 
 import (
 	"context"
+	"fmt"
 	"time"
 
+	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/util/retry"
-	otgrpc "github.com/opentracing-contrib/go-grpc"
-	"github.com/opentracing/opentracing-go"
+	"github.com/milvus-io/milvus/internal/util/trace"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
@@ -30,37 +31,81 @@ import (
 
 type Client struct {
 	grpcClient indexpb.IndexNodeClient
-	address    string
+	conn       *grpc.ClientConn
 	ctx        context.Context
+
+	addr string
+
+	timeout   time.Duration
+	reconnTry int
+	recallTry int
 }
 
-func NewClient(nodeAddress string) (*Client, error) {
+func NewClient(addr string, timeout time.Duration) (*Client, error) {
+	if addr == "" {
+		return nil, fmt.Errorf("address is empty")
+	}
 	return &Client{
-		address: nodeAddress,
-		ctx:     context.Background(),
+		addr:      addr,
+		ctx:       context.Background(),
+		timeout:   timeout,
+		recallTry: 3,
+		reconnTry: 10,
 	}, nil
 }
 
 func (c *Client) Init() error {
-	tracer := opentracing.GlobalTracer()
+	// for now, we must try many times in Init Stage
+	initFunc := func() error {
+		return c.connect()
+	}
+	err := retry.Retry(10000, 3*time.Second, initFunc)
+	return err
+}
+
+func (c *Client) connect() error {
 	connectGrpcFunc := func() error {
-		log.Debug("indexnode connect ", zap.String("address", c.address))
-		conn, err := grpc.DialContext(c.ctx, c.address, grpc.WithInsecure(), grpc.WithBlock(),
+		ctx, cancelFunc := context.WithTimeout(c.ctx, c.timeout)
+		defer cancelFunc()
+		opts := trace.GetInterceptorOpts()
+		log.Debug("IndexNodeClient try connect ", zap.String("address", c.addr))
+		conn, err := grpc.DialContext(ctx, c.addr, grpc.WithInsecure(), grpc.WithBlock(),
 			grpc.WithUnaryInterceptor(
-				otgrpc.OpenTracingClientInterceptor(tracer)),
+				grpc_opentracing.UnaryClientInterceptor(opts...)),
 			grpc.WithStreamInterceptor(
-				otgrpc.OpenTracingStreamClientInterceptor(tracer)))
+				grpc_opentracing.StreamClientInterceptor(opts...)))
 		if err != nil {
 			return err
 		}
-		c.grpcClient = indexpb.NewIndexNodeClient(conn)
+		c.conn = conn
 		return nil
 	}
-	err := retry.Retry(100000, time.Millisecond*200, connectGrpcFunc)
+
+	err := retry.Retry(c.reconnTry, 500*time.Millisecond, connectGrpcFunc)
 	if err != nil {
+		log.Debug("IndexNodeClient try connect failed", zap.Error(err))
 		return err
 	}
+	log.Debug("IndexNodeClient try connect success", zap.String("address", c.addr))
+	c.grpcClient = indexpb.NewIndexNodeClient(c.conn)
 	return nil
+}
+
+func (c *Client) recall(caller func() (interface{}, error)) (interface{}, error) {
+	ret, err := caller()
+	if err == nil {
+		return ret, nil
+	}
+	for i := 0; i < c.recallTry; i++ {
+		err = c.connect()
+		if err == nil {
+			ret, err = caller()
+			if err == nil {
+				return ret, nil
+			}
+		}
+	}
+	return ret, err
 }
 
 func (c *Client) Start() error {
@@ -71,22 +116,35 @@ func (c *Client) Stop() error {
 	return nil
 }
 
+// Register dummy
+func (c *Client) Register() error {
+	return nil
+}
+
 func (c *Client) GetComponentStates(ctx context.Context) (*internalpb.ComponentStates, error) {
-	return c.grpcClient.GetComponentStates(ctx, &internalpb.GetComponentStatesRequest{})
+	ret, err := c.recall(func() (interface{}, error) {
+		return c.grpcClient.GetComponentStates(ctx, &internalpb.GetComponentStatesRequest{})
+	})
+	return ret.(*internalpb.ComponentStates), err
 }
 
 func (c *Client) GetTimeTickChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
-	return c.grpcClient.GetTimeTickChannel(ctx, &internalpb.GetTimeTickChannelRequest{})
+	ret, err := c.recall(func() (interface{}, error) {
+		return c.grpcClient.GetTimeTickChannel(ctx, &internalpb.GetTimeTickChannelRequest{})
+	})
+	return ret.(*milvuspb.StringResponse), err
 }
 
 func (c *Client) GetStatisticsChannel(ctx context.Context) (*milvuspb.StringResponse, error) {
-	return c.grpcClient.GetStatisticsChannel(ctx, &internalpb.GetStatisticsChannelRequest{})
+	ret, err := c.recall(func() (interface{}, error) {
+		return c.grpcClient.GetStatisticsChannel(ctx, &internalpb.GetStatisticsChannelRequest{})
+	})
+	return ret.(*milvuspb.StringResponse), err
 }
 
-func (c *Client) BuildIndex(ctx context.Context, req *indexpb.BuildIndexRequest) (*commonpb.Status, error) {
-	return c.grpcClient.BuildIndex(ctx, req)
-}
-
-func (c *Client) DropIndex(ctx context.Context, req *indexpb.DropIndexRequest) (*commonpb.Status, error) {
-	return c.grpcClient.DropIndex(ctx, req)
+func (c *Client) CreateIndex(ctx context.Context, req *indexpb.CreateIndexRequest) (*commonpb.Status, error) {
+	ret, err := c.recall(func() (interface{}, error) {
+		return c.grpcClient.CreateIndex(ctx, req)
+	})
+	return ret.(*commonpb.Status), err
 }

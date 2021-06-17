@@ -101,19 +101,6 @@ func sendSearchRequest(ctx context.Context, DIM int) error {
 		return err
 	}
 
-	// generate searchRequest
-	searchReq := milvuspb.SearchRequest{
-		Dsl:              dslString,
-		PlaceholderGroup: placeGroupByte,
-	}
-	searchReqBytes, err := proto.Marshal(&searchReq)
-	if err != nil {
-		return err
-	}
-	blob := commonpb.Blob{
-		Value: searchReqBytes,
-	}
-
 	// generate searchMsg
 	searchMsg := &msgstream.SearchMsg{
 		BaseMsg: msgstream.BaseMsg{
@@ -126,8 +113,10 @@ func sendSearchRequest(ctx context.Context, DIM int) error {
 				Timestamp: Timestamp(10),
 				SourceID:  1,
 			},
-			ResultChannelID: "0",
-			Query:           &blob,
+			ResultChannelID:  "0",
+			Dsl:              dslString,
+			PlaceholderGroup: placeGroupByte,
+			DslType:          commonpb.DslType_Dsl,
 		},
 	}
 	msgPackSearch := msgstream.MsgPack{}
@@ -151,27 +140,17 @@ func TestSearch_Search(t *testing.T) {
 	msFactory, err := newMessageStreamFactory()
 	assert.NoError(t, err)
 
-	// start dataSync
-	newDS := newDataSyncService(node.queryNodeLoopCtx, node.replica, msFactory, collectionID)
-	err = node.addDataSyncService(collectionID, newDS)
-	assert.NoError(t, err)
-	ds, err := node.getDataSyncService(collectionID)
-	assert.NoError(t, err)
-	go ds.start()
-
 	// start search service
-	node.searchService = newSearchService(node.queryNodeLoopCtx, node.replica, msFactory)
-	go node.searchService.start()
-	node.searchService.startSearchCollection(collectionID)
-
-	tSafe := node.replica.getTSafe(collectionID)
-	assert.NotNil(t, tSafe)
-	tSafe.set(1000)
+	node.searchService = newSearchService(node.queryNodeLoopCtx,
+		node.historical,
+		node.streaming,
+		msFactory)
+	node.searchService.addSearchCollection(collectionID)
 
 	// load segment
-	err = node.replica.addSegment(segmentID, defaultPartitionID, collectionID, segmentTypeSealed)
+	err = node.historical.replica.addSegment(segmentID, defaultPartitionID, collectionID, "", segmentTypeSealed, true)
 	assert.NoError(t, err)
-	segment, err := node.replica.getSegmentByID(segmentID)
+	segment, err := node.historical.replica.getSegmentByID(segmentID)
 	assert.NoError(t, err)
 	err = loadFields(segment, DIM, N)
 	assert.NoError(t, err)
@@ -199,34 +178,24 @@ func TestSearch_SearchMultiSegments(t *testing.T) {
 	msFactory, err := newMessageStreamFactory()
 	assert.NoError(t, err)
 
-	// start dataSync
-	newDS := newDataSyncService(node.queryNodeLoopCtx, node.replica, msFactory, collectionID)
-	err = node.addDataSyncService(collectionID, newDS)
-	assert.NoError(t, err)
-	ds, err := node.getDataSyncService(collectionID)
-	assert.NoError(t, err)
-	go ds.start()
-
 	// start search service
-	node.searchService = newSearchService(node.queryNodeLoopCtx, node.replica, msFactory)
-	go node.searchService.start()
-	node.searchService.startSearchCollection(collectionID)
-
-	tSafe := node.replica.getTSafe(collectionID)
-	assert.NotNil(t, tSafe)
-	tSafe.set(1000)
+	node.searchService = newSearchService(node.queryNodeLoopCtx,
+		node.historical,
+		node.streaming,
+		msFactory)
+	node.searchService.addSearchCollection(collectionID)
 
 	// load segments
-	err = node.replica.addSegment(segmentID1, defaultPartitionID, collectionID, segmentTypeSealed)
+	err = node.historical.replica.addSegment(segmentID1, defaultPartitionID, collectionID, "", segmentTypeSealed, true)
 	assert.NoError(t, err)
-	segment1, err := node.replica.getSegmentByID(segmentID1)
+	segment1, err := node.historical.replica.getSegmentByID(segmentID1)
 	assert.NoError(t, err)
 	err = loadFields(segment1, DIM, N)
 	assert.NoError(t, err)
 
-	err = node.replica.addSegment(segmentID2, defaultPartitionID, collectionID, segmentTypeSealed)
+	err = node.historical.replica.addSegment(segmentID2, defaultPartitionID, collectionID, "", segmentTypeSealed, true)
 	assert.NoError(t, err)
-	segment2, err := node.replica.getSegmentByID(segmentID2)
+	segment2, err := node.historical.replica.getSegmentByID(segmentID2)
 	assert.NoError(t, err)
 	err = loadFields(segment2, DIM, N)
 	assert.NoError(t, err)

@@ -40,19 +40,9 @@ func TestParamTable_DataNode(t *testing.T) {
 		log.Println("FlushInsertBufferSize:", size)
 	})
 
-	t.Run("Test FlushDdBufSize", func(t *testing.T) {
-		size := Params.FlushDdBufferSize
-		log.Println("FlushDdBufferSize:", size)
-	})
-
 	t.Run("Test InsertBinlogRootPath", func(t *testing.T) {
 		path := Params.InsertBinlogRootPath
 		log.Println("InsertBinlogRootPath:", path)
-	})
-
-	t.Run("Test DdlBinlogRootPath", func(t *testing.T) {
-		path := Params.DdlBinlogRootPath
-		log.Println("DdBinlogRootPath:", path)
 	})
 
 	t.Run("Test PulsarAddress", func(t *testing.T) {
@@ -60,22 +50,12 @@ func TestParamTable_DataNode(t *testing.T) {
 		log.Println("PulsarAddress:", address)
 	})
 
-	t.Run("Test insertChannelNames", func(t *testing.T) {
-		names := Params.InsertChannelNames
-		log.Println("InsertChannelNames:", names)
-	})
-
-	t.Run("Test ddChannelNames", func(t *testing.T) {
-		names := Params.DDChannelNames
-		log.Println("DDChannelNames:", names)
-	})
-
 	t.Run("Test SegmentStatisticsChannelName", func(t *testing.T) {
-		name := Params.SegmentStatisticsChannelName
-		log.Println("SegmentStatisticsChannelName:", name)
+		path := Params.SegmentStatisticsChannelName
+		log.Println("SegmentStatisticsChannelName:", path)
 	})
 
-	t.Run("Test timeTickChannelName", func(t *testing.T) {
+	t.Run("Test TimeTickChannelName", func(t *testing.T) {
 		name := Params.TimeTickChannelName
 		log.Println("TimeTickChannelName:", name)
 	})
@@ -85,24 +65,14 @@ func TestParamTable_DataNode(t *testing.T) {
 		log.Println("MsgChannelSubName:", name)
 	})
 
-	t.Run("Test EtcdAddress", func(t *testing.T) {
-		addr := Params.EtcdAddress
-		log.Println("EtcdAddress:", addr)
+	t.Run("Test EtcdEndpoints", func(t *testing.T) {
+		endpoints := Params.EtcdEndpoints
+		log.Println("EtcdEndpoints:", endpoints)
 	})
 
 	t.Run("Test MetaRootPath", func(t *testing.T) {
 		path := Params.MetaRootPath
 		log.Println("MetaRootPath:", path)
-	})
-
-	t.Run("Test SegFlushMetaSubPath", func(t *testing.T) {
-		path := Params.SegFlushMetaSubPath
-		log.Println("SegFlushMetaSubPath:", path)
-	})
-
-	t.Run("Test DDLFlushMetaSubPath", func(t *testing.T) {
-		path := Params.DDLFlushMetaSubPath
-		log.Println("DDLFlushMetaSubPath:", path)
 	})
 
 	t.Run("Test minioAccessKeyID", func(t *testing.T) {
@@ -123,10 +93,5 @@ func TestParamTable_DataNode(t *testing.T) {
 	t.Run("Test MinioBucketName", func(t *testing.T) {
 		name := Params.MinioBucketName
 		log.Println("MinioBucketName:", name)
-	})
-
-	t.Run("Test sliceIndex", func(t *testing.T) {
-		idx := Params.sliceIndex()
-		log.Println("sliceIndex:", idx)
 	})
 }

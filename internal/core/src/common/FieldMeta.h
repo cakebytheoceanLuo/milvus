@@ -83,8 +83,33 @@ datatype_is_vector(DataType datatype) {
     return datatype == DataType::VECTOR_BINARY || datatype == DataType::VECTOR_FLOAT;
 }
 
+inline bool
+datatype_is_interger(DataType datatype) {
+    switch (datatype) {
+        case DataType::INT8:
+        case DataType::INT16:
+        case DataType::INT32:
+        case DataType::INT64:
+            return true;
+        default:
+            return false;
+    }
+}
+
+inline bool
+datatype_is_floating(DataType datatype) {
+    switch (datatype) {
+        case DataType::DOUBLE:
+        case DataType::FLOAT:
+            return true;
+        default:
+            return false;
+    }
+}
+
 class FieldMeta {
  public:
+    static const FieldMeta RowIdMeta;
     FieldMeta(const FieldMeta&) = delete;
     FieldMeta(FieldMeta&&) = default;
     FieldMeta&
@@ -155,4 +180,5 @@ class FieldMeta {
     DataType type_ = DataType::NONE;
     std::optional<VectorInfo> vector_info_;
 };
+
 }  // namespace milvus

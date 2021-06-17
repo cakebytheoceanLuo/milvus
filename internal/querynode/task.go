@@ -17,13 +17,15 @@ import (
 	"fmt"
 	"math/rand"
 	"strconv"
-	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/log"
-	"github.com/milvus-io/milvus/internal/msgstream"
+	"github.com/milvus-io/milvus/internal/proto/commonpb"
+	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	queryPb "github.com/milvus-io/milvus/internal/proto/querypb"
 )
 
@@ -109,63 +111,205 @@ func (w *watchDmChannelsTask) PreExecute(ctx context.Context) error {
 }
 
 func (w *watchDmChannelsTask) Execute(ctx context.Context) error {
-	log.Debug("starting WatchDmChannels ...", zap.String("ChannelIDs", fmt.Sprintln(w.req.ChannelIDs)))
 	collectionID := w.req.CollectionID
-	ds, err := w.node.getDataSyncService(collectionID)
-	if err != nil || ds.dmStream == nil {
-		errMsg := "null data sync service or null data manipulation stream, collectionID = " + fmt.Sprintln(collectionID)
-		log.Error(errMsg)
-		return errors.New(errMsg)
-	}
+	partitionID := w.req.PartitionID
+	loadPartition := partitionID != 0
 
-	switch t := ds.dmStream.(type) {
-	case *msgstream.MqTtMsgStream:
-	default:
-		_ = t
-		errMsg := "type assertion failed for dm message stream"
-		log.Error(errMsg)
-		return errors.New(errMsg)
+	// get all vChannels
+	vChannels := make([]Channel, 0)
+	pChannels := make([]Channel, 0)
+	for _, info := range w.req.Infos {
+		vChannels = append(vChannels, info.ChannelName)
 	}
+	log.Debug("starting WatchDmChannels ...",
+		zap.Any("collectionName", w.req.Schema.Name),
+		zap.Any("collectionID", collectionID),
+		zap.String("vChannels", fmt.Sprintln(vChannels)))
 
+	// get physical channels
+	desColReq := &milvuspb.DescribeCollectionRequest{
+		Base: &commonpb.MsgBase{
+			MsgType: commonpb.MsgType_DescribeCollection,
+		},
+		CollectionID: collectionID,
+	}
+	desColRsp, err := w.node.masterService.DescribeCollection(ctx, desColReq)
+	if err != nil {
+		log.Error("get channels failed, err = " + err.Error())
+		return err
+	}
+	log.Debug("get channels from master",
+		zap.Any("collectionID", collectionID),
+		zap.Any("vChannels", desColRsp.VirtualChannelNames),
+		zap.Any("pChannels", desColRsp.PhysicalChannelNames),
+	)
+	VPChannels := make(map[string]string) // map[vChannel]pChannel
+	for _, ch := range vChannels {
+		for i := range desColRsp.VirtualChannelNames {
+			if desColRsp.VirtualChannelNames[i] == ch {
+				VPChannels[ch] = desColRsp.PhysicalChannelNames[i]
+				pChannels = append(pChannels, desColRsp.PhysicalChannelNames[i])
+				break
+			}
+		}
+	}
+	if len(VPChannels) != len(vChannels) {
+		return errors.New("get physical channels failed, illegal channel length, collectionID = " + fmt.Sprintln(collectionID))
+	}
+	log.Debug("get physical channels done", zap.Any("collectionID", collectionID))
+
+	// init replica
+	if hasCollectionInStreaming := w.node.streaming.replica.hasCollection(collectionID); !hasCollectionInStreaming {
+		err := w.node.streaming.replica.addCollection(collectionID, w.req.Schema)
+		if err != nil {
+			return err
+		}
+		w.node.streaming.replica.initExcludedSegments(collectionID)
+	}
+	collection, err := w.node.streaming.replica.getCollectionByID(collectionID)
+	if err != nil {
+		return err
+	}
+	collection.addVChannels(vChannels)
+	collection.addPChannels(pChannels)
+	if hasCollectionInHistorical := w.node.historical.replica.hasCollection(collectionID); !hasCollectionInHistorical {
+		err := w.node.historical.replica.addCollection(collectionID, w.req.Schema)
+		if err != nil {
+			return err
+		}
+	}
+	if loadPartition {
+		if hasPartitionInStreaming := w.node.streaming.replica.hasPartition(partitionID); !hasPartitionInStreaming {
+			err := w.node.streaming.replica.addPartition(collectionID, partitionID)
+			if err != nil {
+				return err
+			}
+		}
+		if hasPartitionInHistorical := w.node.historical.replica.hasPartition(partitionID); !hasPartitionInHistorical {
+			err := w.node.historical.replica.addPartition(collectionID, partitionID)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	log.Debug("watchDMChannel, init replica done", zap.Any("collectionID", collectionID))
+
+	// get subscription name
 	getUniqueSubName := func() string {
 		prefixName := Params.MsgChannelSubName
-		return prefixName + "-" + strconv.FormatInt(collectionID, 10)
+		return prefixName + "-" + strconv.FormatInt(collectionID, 10) + "-" + strconv.Itoa(rand.Int())
 	}
-
-	// add request channel
-	consumeChannels := w.req.ChannelIDs
-	toSeekInfo := make([]*internalpb.MsgPosition, 0)
-	toDirSubChannels := make([]string, 0)
-
 	consumeSubName := getUniqueSubName()
 
+	// group channels by to seeking or consuming
+	toSeekChannels := make([]*internalpb.MsgPosition, 0)
+	toSubChannels := make([]Channel, 0)
 	for _, info := range w.req.Infos {
-		if len(info.Pos.MsgID) == 0 {
-			toDirSubChannels = append(toDirSubChannels, info.ChannelID)
+		if info.SeekPosition == nil || len(info.SeekPosition.MsgID) == 0 {
+			toSubChannels = append(toSubChannels, info.ChannelName)
 			continue
 		}
-		info.Pos.MsgGroup = consumeSubName
-		toSeekInfo = append(toSeekInfo, info.Pos)
+		info.SeekPosition.MsgGroup = consumeSubName
+		toSeekChannels = append(toSeekChannels, info.SeekPosition)
+	}
+	log.Debug("watchDMChannel, group channels done", zap.Any("collectionID", collectionID))
 
-		log.Debug("prevent inserting segments", zap.String("segmentIDs", fmt.Sprintln(info.ExcludedSegments)))
-		err := w.node.replica.addExcludedSegments(collectionID, info.ExcludedSegments)
+	// add check points info
+	checkPointInfos := make([]*datapb.SegmentInfo, 0)
+	for _, info := range w.req.Infos {
+		checkPointInfos = append(checkPointInfos, info.UnflushedSegments...)
+	}
+	err = w.node.streaming.replica.addExcludedSegments(collectionID, checkPointInfos)
+	if err != nil {
+		log.Error(err.Error())
+		return err
+	}
+	log.Debug("watchDMChannel, add check points info done", zap.Any("collectionID", collectionID))
+
+	// create tSafe
+	for _, channel := range vChannels {
+		w.node.streaming.tSafeReplica.addTSafe(channel)
+	}
+
+	// add flow graph
+	if loadPartition {
+		err = w.node.streaming.dataSyncService.addPartitionFlowGraph(collectionID, partitionID, vChannels)
 		if err != nil {
-			log.Error(err.Error())
+			return err
+		}
+		log.Debug("query node add partition flow graphs", zap.Any("channels", vChannels))
+	} else {
+		err = w.node.streaming.dataSyncService.addCollectionFlowGraph(collectionID, vChannels)
+		if err != nil {
+			return err
+		}
+		log.Debug("query node add collection flow graphs", zap.Any("channels", vChannels))
+	}
+
+	// channels as consumer
+	var nodeFGs map[Channel]*queryNodeFlowGraph
+	if loadPartition {
+		nodeFGs, err = w.node.streaming.dataSyncService.getPartitionFlowGraphs(partitionID, vChannels)
+		if err != nil {
+			return err
+		}
+	} else {
+		nodeFGs, err = w.node.streaming.dataSyncService.getCollectionFlowGraphs(collectionID, vChannels)
+		if err != nil {
+			return err
+		}
+	}
+	for _, channel := range toSubChannels {
+		for _, fg := range nodeFGs {
+			if fg.channel == channel {
+				// use pChannel to consume
+				err := fg.consumerFlowGraph(VPChannels[channel], consumeSubName)
+				if err != nil {
+					errMsg := "msgStream consume error :" + err.Error()
+					log.Error(errMsg)
+					return errors.New(errMsg)
+				}
+			}
+		}
+	}
+	log.Debug("as consumer channels",
+		zap.Any("collectionID", collectionID),
+		zap.Any("toSubChannels", toSubChannels))
+
+	// seek channel
+	for _, pos := range toSeekChannels {
+		for _, fg := range nodeFGs {
+			if fg.channel == pos.ChannelName {
+				pos.MsgGroup = consumeSubName
+				// use pChannel to seek
+				pos.ChannelName = VPChannels[fg.channel]
+				err := fg.seekQueryNodeFlowGraph(pos)
+				if err != nil {
+					errMsg := "msgStream seek error :" + err.Error()
+					log.Error(errMsg)
+					return errors.New(errMsg)
+				}
+			}
+		}
+	}
+	log.Debug("seek all channel done",
+		zap.Any("collectionID", collectionID),
+		zap.Any("toSeekChannels", toSeekChannels))
+
+	// start flow graphs
+	if loadPartition {
+		err = w.node.streaming.dataSyncService.startPartitionFlowGraph(partitionID, vChannels)
+		if err != nil {
+			return err
+		}
+	} else {
+		err = w.node.streaming.dataSyncService.startCollectionFlowGraph(collectionID, vChannels)
+		if err != nil {
 			return err
 		}
 	}
 
-	ds.dmStream.AsConsumer(toDirSubChannels, consumeSubName)
-	for _, pos := range toSeekInfo {
-		err := ds.dmStream.Seek(pos)
-		if err != nil {
-			errMsg := "msgStream seek error :" + err.Error()
-			log.Error(errMsg)
-			return errors.New(errMsg)
-		}
-	}
-	log.Debug("querynode AsConsumer: " + strings.Join(consumeChannels, ", ") + " : " + consumeSubName)
-	log.Debug("WatchDmChannels done", zap.String("ChannelIDs", fmt.Sprintln(w.req.ChannelIDs)))
+	log.Debug("WatchDmChannels done", zap.String("ChannelIDs", fmt.Sprintln(vChannels)))
 	return nil
 }
 
@@ -176,7 +320,7 @@ func (w *watchDmChannelsTask) PostExecute(ctx context.Context) error {
 // loadSegmentsTask
 func (l *loadSegmentsTask) Timestamp() Timestamp {
 	if l.req.Base == nil {
-		log.Error("nil base req in loadSegmentsTask", zap.Any("collectionID", l.req.CollectionID))
+		log.Error("nil base req in loadSegmentsTask")
 		return 0
 	}
 	return l.req.Base.Timestamp
@@ -197,54 +341,26 @@ func (l *loadSegmentsTask) PreExecute(ctx context.Context) error {
 
 func (l *loadSegmentsTask) Execute(ctx context.Context) error {
 	// TODO: support db
-	collectionID := l.req.CollectionID
-	partitionID := l.req.PartitionID
-	segmentIDs := l.req.SegmentIDs
-	fieldIDs := l.req.FieldIDs
-	schema := l.req.Schema
-
 	log.Debug("query node load segment", zap.String("loadSegmentRequest", fmt.Sprintln(l.req)))
+	var err error
 
-	hasCollection := l.node.replica.hasCollection(collectionID)
-	hasPartition := l.node.replica.hasPartition(partitionID)
-	if !hasCollection {
-		// loading init
-		err := l.node.replica.addCollection(collectionID, schema)
-		if err != nil {
-			return err
-		}
-		l.node.replica.initExcludedSegments(collectionID)
-		newDS := newDataSyncService(l.node.queryNodeLoopCtx, l.node.replica, l.node.msFactory, collectionID)
-		// ignore duplicated dataSyncService error
-		_ = l.node.addDataSyncService(collectionID, newDS)
-		ds, err := l.node.getDataSyncService(collectionID)
-		if err != nil {
-			return err
-		}
-		go ds.start()
-		l.node.searchService.startSearchCollection(collectionID)
+	switch l.req.LoadCondition {
+	case queryPb.TriggerCondition_handoff:
+		err = l.node.historical.loader.loadSegmentOfConditionHandOff(l.req)
+	case queryPb.TriggerCondition_loadBalance:
+		err = l.node.historical.loader.loadSegmentOfConditionLoadBalance(l.req)
+	case queryPb.TriggerCondition_grpcRequest:
+		err = l.node.historical.loader.loadSegmentOfConditionGRPC(l.req)
+	case queryPb.TriggerCondition_nodeDown:
+		err = l.node.historical.loader.loadSegmentOfConditionNodeDown(l.req)
 	}
-	if !hasPartition {
-		err := l.node.replica.addPartition(collectionID, partitionID)
-		if err != nil {
-			return err
-		}
-	}
-	err := l.node.replica.enablePartition(partitionID)
+
 	if err != nil {
+		log.Error(err.Error())
 		return err
 	}
 
-	if len(segmentIDs) == 0 {
-		return nil
-	}
-
-	err = l.node.loadService.loadSegmentPassively(collectionID, partitionID, segmentIDs, fieldIDs)
-	if err != nil {
-		return err
-	}
-
-	log.Debug("LoadSegments done", zap.String("segmentIDs", fmt.Sprintln(l.req.SegmentIDs)))
+	log.Debug("LoadSegments done", zap.String("SegmentLoadInfos", fmt.Sprintln(l.req.Infos)))
 	return nil
 }
 
@@ -275,24 +391,49 @@ func (r *releaseCollectionTask) PreExecute(ctx context.Context) error {
 }
 
 func (r *releaseCollectionTask) Execute(ctx context.Context) error {
-	ds, err := r.node.getDataSyncService(r.req.CollectionID)
-	if err == nil && ds != nil {
-		ds.close()
-		r.node.removeDataSyncService(r.req.CollectionID)
-		r.node.replica.removeTSafe(r.req.CollectionID)
-		r.node.replica.removeExcludedSegments(r.req.CollectionID)
-	}
-
-	if r.node.searchService.hasSearchCollection(r.req.CollectionID) {
-		r.node.searchService.stopSearchCollection(r.req.CollectionID)
-	}
-
-	err = r.node.replica.removeCollection(r.req.CollectionID)
+	log.Debug("receive release collection task", zap.Any("collectionID", r.req.CollectionID))
+	collection, err := r.node.historical.replica.getCollectionByID(r.req.CollectionID)
 	if err != nil {
+		log.Error(err.Error())
 		return err
 	}
+	collection.setReleaseTime(r.req.Base.Timestamp)
 
-	log.Debug("ReleaseCollection done", zap.Int64("collectionID", r.req.CollectionID))
+	const gracefulReleaseTime = 3
+	func() { // release synchronously
+		errMsg := "release collection failed, collectionID = " + strconv.FormatInt(r.req.CollectionID, 10) + ", err = "
+		time.Sleep(gracefulReleaseTime * time.Second)
+
+		r.node.streaming.dataSyncService.removeCollectionFlowGraph(r.req.CollectionID)
+		// remove all tSafes of the target collection
+		for _, channel := range collection.getVChannels() {
+			r.node.streaming.tSafeReplica.removeTSafe(channel)
+		}
+
+		r.node.streaming.replica.removeExcludedSegments(r.req.CollectionID)
+		r.node.searchService.stopSearchCollection(r.req.CollectionID)
+
+		hasCollectionInHistorical := r.node.historical.replica.hasCollection(r.req.CollectionID)
+		if hasCollectionInHistorical {
+			err := r.node.historical.replica.removeCollection(r.req.CollectionID)
+			if err != nil {
+				log.Error(errMsg + err.Error())
+				return
+			}
+		}
+
+		hasCollectionInStreaming := r.node.streaming.replica.hasCollection(r.req.CollectionID)
+		if hasCollectionInStreaming {
+			err := r.node.streaming.replica.removeCollection(r.req.CollectionID)
+			if err != nil {
+				log.Error(errMsg + err.Error())
+				return
+			}
+		}
+
+		log.Debug("ReleaseCollection done", zap.Int64("collectionID", r.req.CollectionID))
+	}()
+
 	return nil
 }
 
@@ -323,13 +464,33 @@ func (r *releasePartitionsTask) PreExecute(ctx context.Context) error {
 }
 
 func (r *releasePartitionsTask) Execute(ctx context.Context) error {
+	log.Debug("receive release partition task",
+		zap.Any("collectionID", r.req.CollectionID),
+		zap.Any("partitionIDs", r.req.PartitionIDs))
+
 	for _, id := range r.req.PartitionIDs {
-		err := r.node.loadService.segLoader.replica.removePartition(id)
-		if err != nil {
-			// not return, try to release all partitions
-			log.Error(err.Error())
+		r.node.streaming.dataSyncService.removePartitionFlowGraph(id)
+		hasPartitionInHistorical := r.node.historical.replica.hasPartition(id)
+		if hasPartitionInHistorical {
+			err := r.node.historical.replica.removePartition(id)
+			if err != nil {
+				// not return, try to release all partitions
+				log.Error(err.Error())
+			}
+		}
+
+		hasPartitionInStreaming := r.node.streaming.replica.hasPartition(id)
+		if hasPartitionInStreaming {
+			err := r.node.streaming.replica.removePartition(id)
+			if err != nil {
+				log.Error(err.Error())
+			}
 		}
 	}
+
+	log.Debug("release partition task done",
+		zap.Any("collectionID", r.req.CollectionID),
+		zap.Any("partitionIDs", r.req.PartitionIDs))
 	return nil
 }
 

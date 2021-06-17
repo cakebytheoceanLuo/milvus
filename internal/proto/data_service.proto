@@ -29,6 +29,9 @@ service DataService {
   rpc GetPartitionStatistics(GetPartitionStatisticsRequest) returns (GetPartitionStatisticsResponse) {}
 
   rpc GetSegmentInfoChannel(GetSegmentInfoChannelRequest) returns (milvus.StringResponse){}
+
+  rpc SaveBinlogPaths(SaveBinlogPathsRequest) returns (common.Status){}
+  rpc GetRecoveryInfo(GetRecoveryInfoRequest) returns (GetRecoveryInfoResponse){}
 }
 
 service DataNode {
@@ -103,12 +106,9 @@ message GetSegmentStatesRequest {
 message SegmentStateInfo {
   int64 segmentID = 1;
   common.SegmentState state = 2;
-  uint64 create_time = 3;
-  uint64 sealed_time = 4;
-  uint64 flushed_time = 5;
-  internal.MsgPosition start_position = 6;
-  internal.MsgPosition end_position = 7;
-  common.Status status = 8;
+  internal.MsgPosition start_position = 3;
+  internal.MsgPosition end_position = 4;
+  common.Status status = 5;
 }
 
 message GetSegmentStatesResponse {
@@ -169,9 +169,18 @@ message GetPartitionStatisticsResponse {
 message GetSegmentInfoChannelRequest {
 }
 
+
+message VchannelInfo {
+  int64 collectionID = 1;
+  string channelName = 2;
+  internal.MsgPosition seek_position = 3;
+  repeated SegmentInfo unflushedSegments = 4;
+  repeated int64 flushedSegments = 5;
+}
+
 message WatchDmChannelsRequest {
   common.MsgBase base = 1;
-  repeated string channel_names = 2;
+  repeated VchannelInfo vchannels = 2;
 }
 
 message FlushSegmentsRequest {
@@ -224,12 +233,84 @@ message SegmentInfo {
   int64 collectionID = 2;
   int64 partitionID = 3;
   string insert_channel = 4;
-  uint64 open_time = 5;
-  uint64 sealed_time = 6;
-  uint64 flushed_time = 7;
-  int64 num_rows = 8;
-  int64 mem_size = 9;
-  common.SegmentState state = 10;
-  internal.MsgPosition start_position = 11;
-  internal.MsgPosition end_position = 12;
+  int64 num_of_rows = 5;
+  common.SegmentState state = 6;
+  internal.MsgPosition dml_position = 7;
+  int64 max_row_num = 8;
+  uint64 last_expire_time = 9;
+  internal.MsgPosition start_position = 10;
 }
+
+message ID2PathList {
+  int64 ID = 1;
+  repeated string Paths = 2;
+}
+
+message SegmentStartPosition {
+  internal.MsgPosition start_position = 1;
+  int64 segmentID = 2;
+}
+
+message SaveBinlogPathsRequest {
+  common.MsgBase base = 1;
+  int64 segmentID = 2;
+  int64 collectionID = 3;
+  repeated ID2PathList field2BinlogPaths = 4;
+  repeated CheckPoint checkPoints = 5;
+  repeated SegmentStartPosition start_positions = 6;                                                             
+  bool flushed = 7;
+}
+
+message CheckPoint {
+  int64 segmentID = 1;
+  internal.MsgPosition position = 2;
+  int64 num_of_rows = 3;
+  
+}
+
+message DataNodeTtMsg {
+    common.MsgBase base =1;
+    string channel_name = 2;
+    uint64 timestamp = 3;
+}
+
+enum ChannelWatchState {
+  Uncomplete = 0;
+  Complete = 1;
+}
+
+message ChannelStatus {
+  string name = 1;
+  ChannelWatchState state=2;
+  int64 collectionID = 3;
+}
+
+message DataNodeInfo {
+  string address = 1;
+  int64 version  = 2;
+  repeated ChannelStatus channels = 3;
+}
+
+message SegmentBinlogs {
+  int64 segmentID = 1;
+  repeated FieldBinlog fieldBinlogs = 2;
+}
+
+message FieldBinlog{
+  int64 fieldID = 1;
+  repeated string binlogs = 2;
+}
+
+message GetRecoveryInfoResponse {
+  common.Status status = 1;
+  repeated VchannelInfo channels = 2;
+  repeated SegmentBinlogs binlogs = 3;
+}
+
+message GetRecoveryInfoRequest {
+  common.MsgBase base = 1;
+  int64 collectionID = 2;
+  int64 partitionID = 3;
+}
+
+                                                                                                                   

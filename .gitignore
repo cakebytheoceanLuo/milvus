@@ -59,8 +59,9 @@ cmake_build/
 *.log
 
 .DS_Store
-*.swp
+*.sw[po]
 cwrapper_build
+cwrapper_dablooms_build
 **/cwrapper_rocksdb_build/
 **/.clangd/*
 **/compile_commands.json
@@ -72,3 +73,10 @@ gtags.conf
 
 # Delve generated file
 **/__debug_bin
+
+# go-codecov
+coverage.txt
+profile.out
+
+# virtualenv
+venv/

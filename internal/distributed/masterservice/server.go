@@ -20,14 +20,12 @@ import (
 	"sync"
 	"time"
 
-	otgrpc "github.com/opentracing-contrib/go-grpc"
-	"github.com/opentracing/opentracing-go"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
 	dsc "github.com/milvus-io/milvus/internal/distributed/dataservice/client"
 	isc "github.com/milvus-io/milvus/internal/distributed/indexservice/client"
-	psc "github.com/milvus-io/milvus/internal/distributed/proxyservice/client"
+	pnc "github.com/milvus-io/milvus/internal/distributed/proxynode/client"
 	qsc "github.com/milvus-io/milvus/internal/distributed/queryservice/client"
 	"github.com/milvus-io/milvus/internal/log"
 	cms "github.com/milvus-io/milvus/internal/masterservice"
@@ -35,16 +33,18 @@ import (
 	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/trace"
 
+	grpc_opentracing "github.com/grpc-ecosystem/go-grpc-middleware/tracing/opentracing"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
 	"github.com/milvus-io/milvus/internal/proto/masterpb"
 	"github.com/milvus-io/milvus/internal/proto/milvuspb"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
+	"github.com/milvus-io/milvus/internal/util/sessionutil"
 )
 
-// grpc wrapper
+// Server grpc wrapper
 type Server struct {
-	masterService *cms.Core
+	masterService types.MasterComponent
 	grpcServer    *grpc.Server
 	grpcErrChan   chan error
 
@@ -53,33 +53,25 @@ type Server struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	proxyService types.ProxyService
 	dataService  types.DataService
 	indexService types.IndexService
 	queryService types.QueryService
 
-	connectProxyService bool
-	connectDataService  bool
-	connectIndexService bool
-	connectQueryService bool
+	newIndexServiceClient func(string, []string, time.Duration) types.IndexService
+	newDataServiceClient  func(string, []string, time.Duration) types.DataService
+	newQueryServiceClient func(string, []string, time.Duration) types.QueryService
 
 	closer io.Closer
 }
 
 func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) {
-
 	ctx1, cancel := context.WithCancel(ctx)
-
 	s := &Server{
-		ctx:                 ctx1,
-		cancel:              cancel,
-		grpcErrChan:         make(chan error),
-		connectDataService:  true,
-		connectProxyService: true,
-		connectIndexService: true,
-		connectQueryService: true,
+		ctx:         ctx1,
+		cancel:      cancel,
+		grpcErrChan: make(chan error),
 	}
-
+	s.setClient()
 	var err error
 	s.masterService, err = cms.NewCore(s.ctx, factory)
 	if err != nil {
@@ -88,11 +80,51 @@ func NewServer(ctx context.Context, factory msgstream.Factory) (*Server, error) 
 	return s, err
 }
 
+func (s *Server) setClient() {
+	ctx := context.Background()
+
+	s.newDataServiceClient = func(etcdMetaRoot string, etcdEndpoints []string, timeout time.Duration) types.DataService {
+		dsClient := dsc.NewClient(etcdMetaRoot, etcdEndpoints, timeout)
+		if err := dsClient.Init(); err != nil {
+			panic(err)
+		}
+		if err := dsClient.Start(); err != nil {
+			panic(err)
+		}
+		if err := funcutil.WaitForComponentInitOrHealthy(ctx, dsClient, "DataService", 1000000, 200*time.Millisecond); err != nil {
+			panic(err)
+		}
+		return dsClient
+	}
+	s.newIndexServiceClient = func(metaRootPath string, etcdEndpoints []string, timeout time.Duration) types.IndexService {
+		isClient := isc.NewClient(metaRootPath, etcdEndpoints, timeout)
+		if err := isClient.Init(); err != nil {
+			panic(err)
+		}
+		if err := isClient.Start(); err != nil {
+			panic(err)
+		}
+		return isClient
+	}
+	s.newQueryServiceClient = func(metaRootPath string, etcdEndpoints []string, timeout time.Duration) types.QueryService {
+		qsClient, err := qsc.NewClient(metaRootPath, etcdEndpoints, timeout)
+		if err != nil {
+			panic(err)
+		}
+		if err := qsClient.Init(); err != nil {
+			panic(err)
+		}
+		if err := qsClient.Start(); err != nil {
+			panic(err)
+		}
+		return qsClient
+	}
+}
+
 func (s *Server) Run() error {
 	if err := s.init(); err != nil {
 		return err
 	}
-
 	if err := s.start(); err != nil {
 		return err
 	}
@@ -103,6 +135,8 @@ func (s *Server) init() error {
 	Params.Init()
 
 	cms.Params.Init()
+	cms.Params.Address = Params.Address
+	cms.Params.Port = Params.Port
 	log.Debug("grpc init done ...")
 
 	ctx := context.Background()
@@ -112,78 +146,57 @@ func (s *Server) init() error {
 
 	log.Debug("init params done")
 
-	err := s.startGrpc()
+	err := s.masterService.Register()
+	if err != nil {
+		return err
+	}
+
+	err = s.startGrpc()
 	if err != nil {
 		return err
 	}
 
 	s.masterService.UpdateStateCode(internalpb.StateCode_Initializing)
+	log.Debug("MasterService", zap.Any("State", internalpb.StateCode_Initializing))
+	s.masterService.SetNewProxyClient(
+		func(s *sessionutil.Session) (types.ProxyNode, error) {
+			cli := pnc.NewClient(s.Address, 3*time.Second)
+			if err := cli.Init(); err != nil {
+				return nil, err
+			}
+			if err := cli.Start(); err != nil {
+				return nil, err
+			}
+			return cli, nil
+		},
+	)
 
-	if s.connectProxyService {
-		log.Debug("proxy service", zap.String("address", Params.ProxyServiceAddress))
-		proxyService := psc.NewClient(Params.ProxyServiceAddress)
-		if err := proxyService.Init(); err != nil {
+	if s.newDataServiceClient != nil {
+		log.Debug("MasterService start to create DataService client")
+		dataService := s.newDataServiceClient(cms.Params.MetaRootPath, cms.Params.EtcdEndpoints, 3*time.Second)
+		if err := s.masterService.SetDataService(ctx, dataService); err != nil {
 			panic(err)
 		}
-
-		err := funcutil.WaitForComponentInitOrHealthy(ctx, proxyService, "ProxyService", 1000000, 200*time.Millisecond)
-		if err != nil {
-			panic(err)
-		}
-
-		if err = s.masterService.SetProxyService(ctx, proxyService); err != nil {
-			panic(err)
-		}
+		s.dataService = dataService
 	}
-	if s.connectDataService {
-		log.Debug("data service", zap.String("address", Params.DataServiceAddress))
-		dataService := dsc.NewClient(Params.DataServiceAddress)
-		if err := dataService.Init(); err != nil {
-			panic(err)
-		}
-		if err := dataService.Start(); err != nil {
-			panic(err)
-		}
-		err := funcutil.WaitForComponentInitOrHealthy(ctx, dataService, "DataService", 1000000, 200*time.Millisecond)
-		if err != nil {
-			panic(err)
-		}
-
-		if err = s.masterService.SetDataService(ctx, dataService); err != nil {
-			panic(err)
-		}
-	}
-	if s.connectIndexService {
-		log.Debug("index service", zap.String("address", Params.IndexServiceAddress))
-		indexService := isc.NewClient(Params.IndexServiceAddress)
-		if err := indexService.Init(); err != nil {
-			panic(err)
-		}
-
+	if s.newIndexServiceClient != nil {
+		log.Debug("MasterService start to create IndexService client")
+		indexService := s.newIndexServiceClient(cms.Params.MetaRootPath, cms.Params.EtcdEndpoints, 3*time.Second)
 		if err := s.masterService.SetIndexService(indexService); err != nil {
 			panic(err)
+		}
+		s.indexService = indexService
+	}
+	if s.newQueryServiceClient != nil {
+		log.Debug("MasterService start to create QueryService client")
+		queryService := s.newQueryServiceClient(cms.Params.MetaRootPath, cms.Params.EtcdEndpoints, 3*time.Second)
+		if err := s.masterService.SetQueryService(queryService); err != nil {
+			panic(err)
+		}
+		s.queryService = queryService
+	}
 
-		}
-	}
-	if s.connectQueryService {
-		queryService, err := qsc.NewClient(Params.QueryServiceAddress, 5*time.Second)
-		if err != nil {
-			panic(err)
-		}
-		if err = queryService.Init(); err != nil {
-			panic(err)
-		}
-		if err = queryService.Start(); err != nil {
-			panic(err)
-		}
-		if err = s.masterService.SetQueryService(queryService); err != nil {
-			panic(err)
-		}
-	}
-	if err := s.masterService.Init(); err != nil {
-		return err
-	}
-	return nil
+	return s.masterService.Init()
 }
 
 func (s *Server) startGrpc() error {
@@ -209,14 +222,14 @@ func (s *Server) startGrpcLoop(grpcPort int) {
 	ctx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
-	tracer := opentracing.GlobalTracer()
+	opts := trace.GetInterceptorOpts()
 	s.grpcServer = grpc.NewServer(
 		grpc.MaxRecvMsgSize(math.MaxInt32),
 		grpc.MaxSendMsgSize(math.MaxInt32),
 		grpc.UnaryInterceptor(
-			otgrpc.OpenTracingServerInterceptor(tracer)),
+			grpc_opentracing.UnaryServerInterceptor(opts...)),
 		grpc.StreamInterceptor(
-			otgrpc.OpenTracingStreamServerInterceptor(tracer)))
+			grpc_opentracing.StreamServerInterceptor(opts...)))
 	masterpb.RegisterMasterServiceServer(s.grpcServer, s)
 
 	go funcutil.CheckGrpcReady(ctx, s.grpcErrChan)
@@ -238,11 +251,6 @@ func (s *Server) Stop() error {
 	if s.closer != nil {
 		if err := s.closer.Close(); err != nil {
 			log.Error("close opentracing", zap.Error(err))
-		}
-	}
-	if s.proxyService != nil {
-		if err := s.proxyService.Stop(); err != nil {
-			log.Debug("close proxyService client", zap.Error(err))
 		}
 	}
 	if s.indexService != nil {
@@ -277,19 +285,14 @@ func (s *Server) GetComponentStates(ctx context.Context, req *internalpb.GetComp
 	return s.masterService.GetComponentStates(ctx)
 }
 
-//receiver time tick from proxy service, and put it into this channel
+// GetTimeTickChannel receiver time tick from proxy service, and put it into this channel
 func (s *Server) GetTimeTickChannel(ctx context.Context, req *internalpb.GetTimeTickChannelRequest) (*milvuspb.StringResponse, error) {
 	return s.masterService.GetTimeTickChannel(ctx)
 }
 
-//just define a channel, not used currently
+// GetStatisticsChannel just define a channel, not used currently
 func (s *Server) GetStatisticsChannel(ctx context.Context, req *internalpb.GetStatisticsChannelRequest) (*milvuspb.StringResponse, error) {
 	return s.masterService.GetStatisticsChannel(ctx)
-}
-
-//receive ddl from rpc and time tick from proxy service, and put them into this channel
-func (s *Server) GetDdChannel(ctx context.Context, req *internalpb.GetDdChannelRequest) (*milvuspb.StringResponse, error) {
-	return s.masterService.GetDdChannel(ctx)
 }
 
 //DDL request
@@ -329,7 +332,7 @@ func (s *Server) ShowPartitions(ctx context.Context, in *milvuspb.ShowPartitions
 	return s.masterService.ShowPartitions(ctx, in)
 }
 
-//index builder service
+// CreateIndex index builder service
 func (s *Server) CreateIndex(ctx context.Context, in *milvuspb.CreateIndexRequest) (*commonpb.Status, error) {
 	return s.masterService.CreateIndex(ctx, in)
 }
@@ -342,13 +345,18 @@ func (s *Server) DescribeIndex(ctx context.Context, in *milvuspb.DescribeIndexRe
 	return s.masterService.DescribeIndex(ctx, in)
 }
 
-//global timestamp allocator
+// AllocTimestamp global timestamp allocator
 func (s *Server) AllocTimestamp(ctx context.Context, in *masterpb.AllocTimestampRequest) (*masterpb.AllocTimestampResponse, error) {
 	return s.masterService.AllocTimestamp(ctx, in)
 }
 
 func (s *Server) AllocID(ctx context.Context, in *masterpb.AllocIDRequest) (*masterpb.AllocIDResponse, error) {
 	return s.masterService.AllocID(ctx, in)
+}
+
+// UpdateChannelTimeTick used to handle ChannelTimeTickMsg
+func (s *Server) UpdateChannelTimeTick(ctx context.Context, in *internalpb.ChannelTimeTickMsg) (*commonpb.Status, error) {
+	return s.masterService.UpdateChannelTimeTick(ctx, in)
 }
 
 func (s *Server) DescribeSegment(ctx context.Context, in *milvuspb.DescribeSegmentRequest) (*milvuspb.DescribeSegmentResponse, error) {

@@ -16,15 +16,19 @@ import (
 	"errors"
 	"runtime"
 	"strconv"
+	"time"
 
+	"github.com/milvus-io/milvus/internal/util/retry"
+
+	"github.com/golang/protobuf/proto"
 	"go.uber.org/zap"
 
 	"github.com/milvus-io/milvus/internal/kv"
+	etcdkv "github.com/milvus-io/milvus/internal/kv/etcd"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/indexpb"
 	"github.com/milvus-io/milvus/internal/storage"
-	"github.com/milvus-io/milvus/internal/types"
 	"github.com/milvus-io/milvus/internal/util/funcutil"
 )
 
@@ -81,12 +85,12 @@ func (bt *BaseTask) Notify(err error) {
 
 type IndexBuildTask struct {
 	BaseTask
-	index         Index
-	kv            kv.BaseKV
-	savePaths     []string
-	req           *indexpb.BuildIndexRequest
-	serviceClient types.IndexService
-	nodeID        UniqueID
+	index     Index
+	kv        kv.BaseKV
+	etcdKV    *etcdkv.EtcdKV
+	savePaths []string
+	req       *indexpb.CreateIndexRequest
+	nodeID    UniqueID
 }
 
 func (it *IndexBuildTask) Ctx() context.Context {
@@ -107,58 +111,72 @@ func (bt *BaseTask) Name() string {
 
 func (it *IndexBuildTask) OnEnqueue() error {
 	it.SetID(it.req.IndexBuildID)
-	log.Debug("indexnode", zap.Int64("[IndexBuilderTask] Enqueue TaskID", it.ID()))
+	log.Debug("IndexNode IndexBuilderTask Enqueue", zap.Int64("TaskID", it.ID()))
 	return nil
+}
+
+func (it *IndexBuildTask) checkIndexMeta(pre bool) error {
+	fn := func() error {
+		indexMeta := indexpb.IndexMeta{}
+		_, values, versions, err := it.etcdKV.LoadWithPrefix2(it.req.MetaPath)
+		if err != nil {
+			log.Debug("IndexNode checkIndexMeta", zap.Any("load meta error with path", it.req.MetaPath),
+				zap.Error(err), zap.Any("pre", pre))
+			return err
+		}
+		log.Debug("IndexNode checkIndexMeta load meta success", zap.Any("path", it.req.MetaPath), zap.Any("pre", pre))
+		err = proto.UnmarshalText(values[0], &indexMeta)
+		if err != nil {
+			log.Debug("IndexNode checkIndexMeta Unmarshal", zap.Error(err))
+			return err
+		}
+		log.Debug("IndexNode checkIndexMeta Unmarshal success", zap.Any("IndexMeta", indexMeta))
+		if indexMeta.Version > it.req.Version || indexMeta.State == commonpb.IndexState_Finished {
+			log.Debug("IndexNode checkIndexMeta Notify build index this version is not the latest version", zap.Any("version", it.req.Version))
+			return nil
+		}
+		if indexMeta.MarkDeleted {
+			indexMeta.State = commonpb.IndexState_Finished
+			v := proto.MarshalTextString(&indexMeta)
+			err := it.etcdKV.CompareVersionAndSwap(it.req.MetaPath, versions[0], v)
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+		if pre {
+			return nil
+		}
+		indexMeta.IndexFilePaths = it.savePaths
+		indexMeta.State = commonpb.IndexState_Finished
+		if it.err != nil {
+			indexMeta.State = commonpb.IndexState_Failed
+		}
+		err = it.etcdKV.CompareVersionAndSwap(it.req.MetaPath, versions[0],
+			proto.MarshalTextString(&indexMeta))
+		log.Debug("IndexNode checkIndexMeta CompareVersionAndSwap", zap.Error(err))
+		return err
+	}
+
+	err := retry.Retry(3, time.Millisecond*200, fn)
+	log.Debug("IndexNode checkIndexMeta final", zap.Error(err))
+	return err
+
 }
 
 func (it *IndexBuildTask) PreExecute(ctx context.Context) error {
-	log.Debug("preExecute...")
-	return nil
+	log.Debug("IndexNode IndexBuildTask preExecute...")
+	return it.checkIndexMeta(true)
 }
 
 func (it *IndexBuildTask) PostExecute(ctx context.Context) error {
-	log.Debug("PostExecute...")
+	log.Debug("IndexNode IndexBuildTask PostExecute...")
 
-	defer func() {
-		if it.err != nil {
-			it.Rollback()
-		}
-	}()
-
-	if it.serviceClient == nil {
-		err := errors.New("IndexBuildTask, serviceClient is nil")
-		log.Debug("[IndexBuildTask][PostExecute] serviceClient is nil")
-		return err
-	}
-
-	nty := &indexpb.NotifyBuildIndexRequest{
-		Status: &commonpb.Status{
-			ErrorCode: commonpb.ErrorCode_Success,
-		},
-		IndexBuildID:   it.req.IndexBuildID,
-		NodeID:         it.nodeID,
-		IndexFilePaths: it.savePaths,
-	}
-	if it.err != nil {
-		nty.Status.ErrorCode = commonpb.ErrorCode_BuildIndexError
-	}
-
-	ctx = context.TODO()
-	resp, err := it.serviceClient.NotifyBuildIndex(ctx, nty)
-	if err != nil {
-		log.Warn("indexnode", zap.String("error", err.Error()))
-		return err
-	}
-
-	if resp.ErrorCode != commonpb.ErrorCode_Success {
-		err = errors.New(resp.Reason)
-		log.Debug("indexnode", zap.String("[IndexBuildTask][PostExecute] err", err.Error()))
-	}
-	return err
+	return it.checkIndexMeta(false)
 }
 
 func (it *IndexBuildTask) Execute(ctx context.Context) error {
-	log.Debug("start build index ...")
+	log.Debug("IndexNode IndexBuildTask Execute ...")
 	var err error
 
 	typeParams := make(map[string]string)
@@ -203,13 +221,13 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 
 	it.index, err = NewCIndex(typeParams, indexParams)
 	if err != nil {
-		log.Error("indexnode", zap.String("NewCIndex err:", err.Error()))
+		log.Error("IndexNode IndexBuildTask Execute NewCIndex failed", zap.Error(err))
 		return err
 	}
 	defer func() {
 		err = it.index.Delete()
 		if err != nil {
-			log.Warn("CIndexDelete Failed")
+			log.Warn("IndexNode IndexBuildTask Execute CIndexDelete Failed", zap.Error(err))
 		}
 	}()
 
@@ -276,7 +294,7 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 		if fOk {
 			err = it.index.BuildFloatVecIndexWithoutIds(floatVectorFieldData.Data)
 			if err != nil {
-				log.Error("indexnode", zap.String("BuildFloatVecIndexWithoutIds error", err.Error()))
+				log.Error("IndexNode BuildFloatVecIndexWithoutIds failed", zap.Error(err))
 				return err
 			}
 		}
@@ -285,7 +303,7 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 		if bOk {
 			err = it.index.BuildBinaryVecIndexWithoutIds(binaryVectorFieldData.Data)
 			if err != nil {
-				log.Error("indexnode", zap.String("BuildBinaryVecIndexWithoutIds err", err.Error()))
+				log.Error("IndexNode BuildBinaryVecIndexWithoutIds failed", zap.Error(err))
 				return err
 			}
 		}
@@ -296,7 +314,7 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 
 		indexBlobs, err := it.index.Serialize()
 		if err != nil {
-			log.Error("indexnode", zap.String("serialize err", err.Error()))
+			log.Error("IndexNode index Serialize failed", zap.Error(err))
 
 			return err
 		}
@@ -309,7 +327,7 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 
 		getSavePathByKey := func(key string) string {
 			// TODO: fix me, use more reasonable method
-			return strconv.Itoa(int(it.req.IndexBuildID)) + "/" + strconv.Itoa(int(partitionID)) + "/" + strconv.Itoa(int(segmentID)) + "/" + key
+			return strconv.Itoa(int(it.req.IndexBuildID)) + "/" + strconv.Itoa(int(it.req.Version)) + "/" + strconv.Itoa(int(partitionID)) + "/" + strconv.Itoa(int(segmentID)) + "/" + key
 		}
 		saveBlob := func(path string, value []byte) error {
 			return it.kv.Save(path, string(value))
@@ -322,7 +340,28 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 
 			savePath := getSavePathByKey(key)
 
-			err := saveBlob(savePath, value)
+			saveIndexFileFn := func() error {
+				v, err := it.etcdKV.Load(it.req.MetaPath)
+				if err != nil {
+					log.Debug("IndexNode load meta failed", zap.Any("path", it.req.MetaPath), zap.Error(err))
+					return err
+				}
+				indexMeta := indexpb.IndexMeta{}
+				err = proto.UnmarshalText(v, &indexMeta)
+				if err != nil {
+					log.Debug("IndexNode Unmarshal indexMeta error ", zap.Error(err))
+					return err
+				}
+				log.Debug("IndexNode Unmarshal indexMeta success ", zap.Any("meta", indexMeta))
+				if indexMeta.Version > it.req.Version {
+					log.Debug("IndexNode try saveIndexFile failed req.Version is low", zap.Any("req.Version", it.req.Version),
+						zap.Any("indexMeta.Version", indexMeta.Version))
+					return errors.New("This task has been reassigned ")
+				}
+				return saveBlob(savePath, value)
+			}
+			err := retry.Retry(5, time.Millisecond*200, saveIndexFileFn)
+			log.Debug("IndexNode try saveIndexFile final", zap.Error(err), zap.Any("savePath", savePath))
 			if err != nil {
 				return err
 			}
@@ -340,18 +379,5 @@ func (it *IndexBuildTask) Execute(ctx context.Context) error {
 	// if err != nil {
 	// 	log.Print("CIndexDelete Failed")
 	// }
-	return nil
-}
-func (it *IndexBuildTask) Rollback() error {
-
-	if it.savePaths == nil {
-		return nil
-	}
-
-	err := it.kv.MultiRemove(it.savePaths)
-	if err != nil {
-		log.Warn("indexnode", zap.String("IndexBuildTask Rollback Failed", err.Error()))
-		return err
-	}
 	return nil
 }

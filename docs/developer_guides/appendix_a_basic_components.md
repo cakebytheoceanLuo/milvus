@@ -53,9 +53,83 @@ type TimeTickProvider interface {
 ```
 
 
+#### A.2 Session
+###### ServerID
+
+The ID is stored in a key-value pair on etcd. The key is metaRootPath + "/services/ServerID". The initial value is 0. When a service is registered, it is incremented by 1 and returned to the next registered service.
+
+###### Registeration
+
+* Registration is achieved through etcd's lease mechanism.
+
+* The service creates a lease with etcd and stores a key-value pair in etcd. If the lease expires or the service goes offline, etcd will delete the key-value pair. You can judge whether this service is avaliable through the key.
+
+* key: "/session" + "/ServerName(-ServerID)(optional)"
+
+* value: json format
+
+  ```json
+  {
+    "ServerID": "ServerID",
+    "ServerName": "ServerName",
+    "Address": "ip:port",
+    "Exclusive": "Exclusive",
+  }
+  ```
+
+* By obtaining the address, you can establish a connection with other services
+
+* If a service is exclusive, the key will not have **ServerID**. But **ServerID** still will be stored in value. 
+
+###### Discovery
+
+* All currently available services can be obtained by obtaining all the key-value pairs deposited during registration. If you want to get all the available nodes for a certain type of service, you can pass in the prefix of the corresponding key
+
+* Registration time can be compared with ServerID for ServerID will increase according to time.
 
 
-#### A.2 Global Parameter Table
+###### Interface
+
+```go
+const DefaultServiceRoot = "/session/"
+const DefaultIDKey = "id"
+const DefaultRetryTimes = 30
+const DefaultTTL = 10
+
+// Session is a struct to store service's session, including ServerID, ServerName,
+// Address.
+// LeaseID will be assigned after registered in etcd.
+type Session struct {
+	ctx        context.Context
+	ServerID   int64  `json:"ServerID,omitempty"`
+	ServerName string `json:"ServerName,omitempty"`
+	Address    string `json:"Address,omitempty"`
+	Exclusive  bool   `json:"Exclusive,omitempty"`
+
+	etcdCli *clientv3.Client
+	leaseID clientv3.LeaseID
+	cancel  context.CancelFunc
+}
+
+// NewSession is a helper to build Session object.LeaseID will be assigned after
+// registeration.
+func NewSession(ctx context.Context, etcdAddress []string) *Session {}
+
+// GetSessions will get all sessions registered in etcd.
+func (s *Session) GetSessions(prefix string) (map[string]*Session, error) {}
+
+// Init will initialize base struct in the SessionManager, including getServerID,
+// and process keepAliveResponse
+func (s *Session) Init(serverName, address string, exclusive bool) <-chan bool {}
+
+// WatchServices watch the service's up and down in etcd, and saves it into local
+// sessions.
+// If a server up, it will be add to addChannel.
+// If a server is offline, it will be add to delChannel.
+func (s *Session) WatchServices(prefix string) (addChannel <-chan *Session, delChannel <-chan *Session) {}
+
+
+#### A.3 Global Parameter Table
 
 ``` go
 type BaseTable struct {
@@ -464,4 +538,5 @@ func (kv *RocksdbKV) MultiSaveAndRemoveWithPrefix(saves map[string]string, remov
 ```
 
 RocksdbKV implements all *TxnKV* interfaces.h
+
 

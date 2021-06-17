@@ -21,23 +21,38 @@ package querynode
 */
 import "C"
 import (
+	"errors"
 	"unsafe"
 
-	"errors"
+	"github.com/milvus-io/milvus/internal/proto/segcorepb"
 )
 
 type Plan struct {
 	cPlan C.CPlan
 }
 
-func createPlan(col Collection, dsl string) (*Plan, error) {
+func createPlan(col *Collection, dsl string) (*Plan, error) {
 	cDsl := C.CString(dsl)
 	defer C.free(unsafe.Pointer(cDsl))
 	var cPlan C.CPlan
 	status := C.CreatePlan(col.collectionPtr, cDsl, &cPlan)
 
-	if err := HandleCStatus(&status, "Create Plan failed"); err != nil {
-		return nil, err
+	err1 := HandleCStatus(&status, "Create Plan failed")
+	if err1 != nil {
+		return nil, err1
+	}
+
+	var newPlan = &Plan{cPlan: cPlan}
+	return newPlan, nil
+}
+
+func createPlanByExpr(col *Collection, expr []byte) (*Plan, error) {
+	var cPlan C.CPlan
+	status := C.CreatePlanByExpr(col.collectionPtr, (*C.char)(unsafe.Pointer(&expr[0])), (C.int64_t)(len(expr)), &cPlan)
+
+	err1 := HandleCStatus(&status, "Create Plan by expr failed")
+	if err1 != nil {
+		return nil, err1
 	}
 
 	var newPlan = &Plan{cPlan: cPlan}
@@ -88,4 +103,28 @@ func (pg *searchRequest) getNumOfQuery() int64 {
 
 func (pg *searchRequest) delete() {
 	C.DeletePlaceholderGroup(pg.cPlaceholderGroup)
+}
+
+type RetrievePlan struct {
+	RetrievePlanPtr C.CRetrievePlan
+	Timestamp       uint64
+}
+
+func createRetrievePlan(col *Collection, msg *segcorepb.RetrieveRequest, timestamp uint64) (*RetrievePlan, error) {
+	protoCGo, err := MarshalForCGo(msg)
+	if err != nil {
+		return nil, err
+	}
+	plan := new(RetrievePlan)
+	plan.Timestamp = timestamp
+	status := C.CreateRetrievePlan(col.collectionPtr, protoCGo.CProto, &plan.RetrievePlanPtr)
+	err2 := HandleCStatus(&status, "create retrieve plan failed")
+	if err2 != nil {
+		return nil, err2
+	}
+	return plan, nil
+}
+
+func (plan *RetrievePlan) delete() {
+	C.DeleteRetrievePlan(plan.RetrievePlanPtr)
 }

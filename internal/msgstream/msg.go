@@ -16,9 +16,11 @@ import (
 	"errors"
 
 	"github.com/golang/protobuf/proto"
+
 	"github.com/milvus-io/milvus/internal/proto/commonpb"
 	"github.com/milvus-io/milvus/internal/proto/datapb"
 	"github.com/milvus-io/milvus/internal/proto/internalpb"
+	"github.com/milvus-io/milvus/internal/proto/querypb"
 )
 
 type MsgType = commonpb.MsgType
@@ -183,56 +185,6 @@ func (fl *FlushCompletedMsg) Unmarshal(input MarshalType) (TsMsg, error) {
 	return flushCompletedMsgTask, nil
 }
 
-/////////////////////////////////////////Flush//////////////////////////////////////////
-// GOOSE TODO remove this
-type FlushMsg struct {
-	BaseMsg
-	internalpb.FlushMsg
-}
-
-func (fl *FlushMsg) TraceCtx() context.Context {
-	return fl.BaseMsg.Ctx
-}
-
-func (fl *FlushMsg) SetTraceCtx(ctx context.Context) {
-	fl.BaseMsg.Ctx = ctx
-}
-
-func (fl *FlushMsg) ID() UniqueID {
-	return fl.Base.MsgID
-}
-
-func (fl *FlushMsg) Type() MsgType {
-	return fl.Base.MsgType
-}
-
-func (fl *FlushMsg) Marshal(input TsMsg) (MarshalType, error) {
-	flushMsgTask := input.(*FlushMsg)
-	flushMsg := &flushMsgTask.FlushMsg
-	mb, err := proto.Marshal(flushMsg)
-	if err != nil {
-		return nil, err
-	}
-	return mb, nil
-}
-
-func (fl *FlushMsg) Unmarshal(input MarshalType) (TsMsg, error) {
-	flushMsg := internalpb.FlushMsg{}
-	in, err := ConvertToByteArray(input)
-	if err != nil {
-		return nil, err
-	}
-	err = proto.Unmarshal(in, &flushMsg)
-	if err != nil {
-		return nil, err
-	}
-	flushMsgTask := &FlushMsg{FlushMsg: flushMsg}
-	flushMsgTask.BeginTimestamp = flushMsgTask.Base.Timestamp
-	flushMsgTask.EndTimestamp = flushMsgTask.Base.Timestamp
-
-	return flushMsgTask, nil
-}
-
 /////////////////////////////////////////Delete//////////////////////////////////////////
 type DeleteMsg struct {
 	BaseMsg
@@ -390,6 +342,104 @@ func (srt *SearchResultMsg) Unmarshal(input MarshalType) (TsMsg, error) {
 	searchResultMsg.EndTimestamp = searchResultMsg.Base.Timestamp
 
 	return searchResultMsg, nil
+}
+
+////////////////////////////////////////Retrieve/////////////////////////////////////////
+type RetrieveMsg struct {
+	BaseMsg
+	internalpb.RetrieveRequest
+}
+
+func (rm *RetrieveMsg) TraceCtx() context.Context {
+	return rm.BaseMsg.Ctx
+}
+
+func (rm *RetrieveMsg) SetTraceCtx(ctx context.Context) {
+	rm.BaseMsg.Ctx = ctx
+}
+
+func (rm *RetrieveMsg) ID() UniqueID {
+	return rm.Base.MsgID
+}
+
+func (rm *RetrieveMsg) Type() MsgType {
+	return rm.Base.MsgType
+}
+
+func (rm *RetrieveMsg) Marshal(input TsMsg) (MarshalType, error) {
+	retrieveTask := input.(*RetrieveMsg)
+	retrieveRequest := &retrieveTask.RetrieveRequest
+	mb, err := proto.Marshal(retrieveRequest)
+	if err != nil {
+		return nil, err
+	}
+	return mb, nil
+}
+
+func (rm *RetrieveMsg) Unmarshal(input MarshalType) (TsMsg, error) {
+	retrieveRequest := internalpb.RetrieveRequest{}
+	in, err := ConvertToByteArray(input)
+	if err != nil {
+		return nil, err
+	}
+	err = proto.Unmarshal(in, &retrieveRequest)
+	if err != nil {
+		return nil, err
+	}
+	retrieveMsg := &RetrieveMsg{RetrieveRequest: retrieveRequest}
+	retrieveMsg.BeginTimestamp = retrieveMsg.Base.Timestamp
+	retrieveMsg.EndTimestamp = retrieveMsg.Base.Timestamp
+
+	return retrieveMsg, nil
+}
+
+//////////////////////////////////////RetrieveResult///////////////////////////////////////
+type RetrieveResultMsg struct {
+	BaseMsg
+	internalpb.RetrieveResults
+}
+
+func (rrm *RetrieveResultMsg) TraceCtx() context.Context {
+	return rrm.BaseMsg.Ctx
+}
+
+func (rrm *RetrieveResultMsg) SetTraceCtx(ctx context.Context) {
+	rrm.BaseMsg.Ctx = ctx
+}
+
+func (rrm *RetrieveResultMsg) ID() UniqueID {
+	return rrm.Base.MsgID
+}
+
+func (rrm *RetrieveResultMsg) Type() MsgType {
+	return rrm.Base.MsgType
+}
+
+func (rrm *RetrieveResultMsg) Marshal(input TsMsg) (MarshalType, error) {
+	retrieveResultTask := input.(*RetrieveResultMsg)
+	retrieveResultRequest := &retrieveResultTask.RetrieveResults
+	mb, err := proto.Marshal(retrieveResultRequest)
+	if err != nil {
+		return nil, err
+	}
+	return mb, nil
+}
+
+func (rrm *RetrieveResultMsg) Unmarshal(input MarshalType) (TsMsg, error) {
+	retrieveResultRequest := internalpb.RetrieveResults{}
+	in, err := ConvertToByteArray(input)
+	if err != nil {
+		return nil, err
+	}
+	err = proto.Unmarshal(in, &retrieveResultRequest)
+	if err != nil {
+		return nil, err
+	}
+	retrieveResultMsg := &RetrieveResultMsg{RetrieveResults: retrieveResultRequest}
+	retrieveResultMsg.BeginTimestamp = retrieveResultMsg.Base.Timestamp
+	retrieveResultMsg.EndTimestamp = retrieveResultMsg.Base.Timestamp
+
+	return retrieveResultMsg, nil
 }
 
 /////////////////////////////////////////TimeTick//////////////////////////////////////////
@@ -832,5 +882,99 @@ func (sim *SegmentInfoMsg) Unmarshal(input MarshalType) (TsMsg, error) {
 	}
 	return &SegmentInfoMsg{
 		SegmentMsg: segMsg,
+	}, nil
+}
+
+/////////////////////////////////////////LoadBalanceSegments//////////////////////////////////////////
+type LoadBalanceSegmentsMsg struct {
+	BaseMsg
+	querypb.LoadBalanceSegments
+}
+
+func (l *LoadBalanceSegmentsMsg) TraceCtx() context.Context {
+	return l.BaseMsg.Ctx
+}
+
+func (l *LoadBalanceSegmentsMsg) SetTraceCtx(ctx context.Context) {
+	l.BaseMsg.Ctx = ctx
+}
+
+func (l *LoadBalanceSegmentsMsg) ID() UniqueID {
+	return l.Base.MsgID
+}
+
+func (l *LoadBalanceSegmentsMsg) Type() MsgType {
+	return l.Base.MsgType
+}
+
+func (l *LoadBalanceSegmentsMsg) Marshal(input TsMsg) (MarshalType, error) {
+	load := input.(*LoadBalanceSegmentsMsg)
+	loadReq := &load.LoadBalanceSegments
+	mb, err := proto.Marshal(loadReq)
+	if err != nil {
+		return nil, err
+	}
+	return mb, nil
+}
+
+func (l *LoadBalanceSegmentsMsg) Unmarshal(input MarshalType) (TsMsg, error) {
+	loadReq := querypb.LoadBalanceSegments{}
+	in, err := ConvertToByteArray(input)
+	if err != nil {
+		return nil, err
+	}
+	err = proto.Unmarshal(in, &loadReq)
+	if err != nil {
+		return nil, err
+	}
+	loadMsg := &LoadBalanceSegmentsMsg{LoadBalanceSegments: loadReq}
+	loadMsg.BeginTimestamp = loadReq.Base.Timestamp
+	loadMsg.EndTimestamp = loadReq.Base.Timestamp
+
+	return loadMsg, nil
+}
+
+type DataNodeTtMsg struct {
+	BaseMsg
+	datapb.DataNodeTtMsg
+}
+
+func (m *DataNodeTtMsg) TraceCtx() context.Context {
+	return m.BaseMsg.Ctx
+}
+
+func (m *DataNodeTtMsg) SetTraceCtx(ctx context.Context) {
+	m.BaseMsg.Ctx = ctx
+}
+
+func (m *DataNodeTtMsg) ID() UniqueID {
+	return m.Base.MsgID
+}
+
+func (m *DataNodeTtMsg) Type() MsgType {
+	return m.Base.MsgType
+}
+
+func (m *DataNodeTtMsg) Marshal(input TsMsg) (MarshalType, error) {
+	msg := input.(*DataNodeTtMsg)
+	t, err := proto.Marshal(&msg.DataNodeTtMsg)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (m *DataNodeTtMsg) Unmarshal(input MarshalType) (TsMsg, error) {
+	msg := datapb.DataNodeTtMsg{}
+	in, err := ConvertToByteArray(input)
+	if err != nil {
+		return nil, err
+	}
+	err = proto.Unmarshal(in, &msg)
+	if err != nil {
+		return nil, err
+	}
+	return &DataNodeTtMsg{
+		DataNodeTtMsg: msg,
 	}, nil
 }

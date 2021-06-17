@@ -23,11 +23,15 @@ package querynode
 */
 import "C"
 import (
+	"math"
+	"sync"
+	"unsafe"
+
+	"go.uber.org/zap"
+
 	"github.com/golang/protobuf/proto"
 	"github.com/milvus-io/milvus/internal/log"
 	"github.com/milvus-io/milvus/internal/proto/schemapb"
-	"go.uber.org/zap"
-	"unsafe"
 )
 
 type Collection struct {
@@ -35,6 +39,11 @@ type Collection struct {
 	id            UniqueID
 	partitionIDs  []UniqueID
 	schema        *schemapb.CollectionSchema
+	vChannels     []Channel
+	pChannels     []Channel
+
+	releaseMu   sync.RWMutex // guards releaseTime
+	releaseTime Timestamp
 }
 
 func (c *Collection) ID() UniqueID {
@@ -52,11 +61,45 @@ func (c *Collection) addPartitionID(partitionID UniqueID) {
 func (c *Collection) removePartitionID(partitionID UniqueID) {
 	tmpIDs := make([]UniqueID, 0)
 	for _, id := range c.partitionIDs {
-		if id == partitionID {
+		if id != partitionID {
 			tmpIDs = append(tmpIDs, id)
 		}
 	}
 	c.partitionIDs = tmpIDs
+}
+
+func (c *Collection) addVChannels(channels []Channel) {
+	log.Debug("add vChannels to collection",
+		zap.Any("channels", channels),
+		zap.Any("collectionID", c.ID()))
+	c.vChannels = append(c.vChannels, channels...)
+}
+
+func (c *Collection) getVChannels() []Channel {
+	return c.vChannels
+}
+
+func (c *Collection) addPChannels(channels []Channel) {
+	log.Debug("add pChannels to collection",
+		zap.Any("channels", channels),
+		zap.Any("collectionID", c.ID()))
+	c.pChannels = append(c.pChannels, channels...)
+}
+
+func (c *Collection) getPChannels() []Channel {
+	return c.pChannels
+}
+
+func (c *Collection) setReleaseTime(t Timestamp) {
+	c.releaseMu.Lock()
+	defer c.releaseMu.Unlock()
+	c.releaseTime = t
+}
+
+func (c *Collection) getReleaseTime() Timestamp {
+	c.releaseMu.RLock()
+	defer c.releaseMu.RUnlock()
+	return c.releaseTime
 }
 
 func newCollection(collectionID UniqueID, schema *schemapb.CollectionSchema) *Collection {
@@ -73,11 +116,14 @@ func newCollection(collectionID UniqueID, schema *schemapb.CollectionSchema) *Co
 		collectionPtr: collection,
 		id:            collectionID,
 		schema:        schema,
+		vChannels:     make([]Channel, 0),
+		pChannels:     make([]Channel, 0),
 	}
 	C.free(unsafe.Pointer(cSchemaBlob))
 
 	log.Debug("create collection", zap.Int64("collectionID", collectionID))
 
+	newCollection.setReleaseTime(Timestamp(math.MaxUint64))
 	return newCollection
 }
 

@@ -12,9 +12,9 @@
 package datanode
 
 import (
-	"os"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/milvus-io/milvus/internal/log"
@@ -22,9 +22,6 @@ import (
 )
 
 type ParamTable struct {
-	// === PRIVATE Configs ===
-	dataNodeIDList []UniqueID
-
 	paramtable.BaseTable
 
 	// === DataNode Internal Components Configs ===
@@ -34,20 +31,13 @@ type ParamTable struct {
 	FlowGraphMaxQueueLength int32
 	FlowGraphMaxParallelism int32
 	FlushInsertBufferSize   int32
-	FlushDdBufferSize       int32
 	InsertBinlogRootPath    string
-	DdlBinlogRootPath       string
+	StatsBinlogRootPath     string
 	Log                     log.Config
 
 	// === DataNode External Components Configs ===
 	// --- Pulsar ---
 	PulsarAddress string
-
-	// - insert channel -
-	InsertChannelNames []string
-
-	// - dd channel -
-	DDChannelNames []string
 
 	// - seg statistics channel -
 	SegmentStatisticsChannelName string
@@ -55,17 +45,12 @@ type ParamTable struct {
 	// - timetick channel -
 	TimeTickChannelName string
 
-	// - complete flush channel -
-	CompleteFlushChannelName string
-
 	// - channel subname -
 	MsgChannelSubName string
 
 	// --- ETCD ---
-	EtcdAddress         string
-	MetaRootPath        string
-	SegFlushMetaSubPath string
-	DDLFlushMetaSubPath string
+	EtcdEndpoints []string
+	MetaRootPath  string
 
 	// --- MinIO ---
 	MinioAddress         string
@@ -87,33 +72,26 @@ func (p *ParamTable) Init() {
 		}
 
 		// === DataNode Internal Components Configs ===
-		p.initNodeID()
 		p.initFlowGraphMaxQueueLength()
 		p.initFlowGraphMaxParallelism()
 		p.initFlushInsertBufferSize()
-		p.initFlushDdBufferSize()
 		p.initInsertBinlogRootPath()
-		p.initDdlBinlogRootPath()
+		p.initStatsBinlogRootPath()
 		p.initLogCfg()
 
 		// === DataNode External Components Configs ===
 		// --- Pulsar ---
 		p.initPulsarAddress()
 
-		// - insert channel -
-		p.initInsertChannelNames()
+		// - seg statistics channel -
+		p.initSegmentStatisticsChannelName()
 
-		// - dd channel -
-		p.initDDChannelNames()
-
-		// - channel subname -
-		p.initMsgChannelSubName()
+		// - timetick channel -
+		p.initTimeTickChannelName()
 
 		// --- ETCD ---
-		p.initEtcdAddress()
+		p.initEtcdEndpoints()
 		p.initMetaRootPath()
-		p.initSegFlushMetaSubPath()
-		p.initDDLFlushMetaSubPath()
 
 		// --- MinIO ---
 		p.initMinioAddress()
@@ -125,24 +103,6 @@ func (p *ParamTable) Init() {
 }
 
 // ==== DataNode internal components configs ====
-func (p *ParamTable) initNodeID() {
-	p.dataNodeIDList = p.DataNodeIDList()
-	dataNodeIDStr := os.Getenv("DATA_NODE_ID")
-	if dataNodeIDStr == "" {
-		if len(p.dataNodeIDList) <= 0 {
-			dataNodeIDStr = "0"
-		} else {
-			dataNodeIDStr = strconv.Itoa(int(p.dataNodeIDList[0]))
-		}
-	}
-	err := p.Save("_dataNodeID", dataNodeIDStr)
-	if err != nil {
-		panic(err)
-	}
-
-	p.NodeID = p.ParseInt64("_dataNodeID")
-}
-
 // ---- flowgraph configs ----
 func (p *ParamTable) initFlowGraphMaxQueueLength() {
 	p.FlowGraphMaxQueueLength = p.ParseInt32("dataNode.dataSync.flowGraph.maxQueueLength")
@@ -157,10 +117,6 @@ func (p *ParamTable) initFlushInsertBufferSize() {
 	p.FlushInsertBufferSize = p.ParseInt32("datanode.flush.insertBufSize")
 }
 
-func (p *ParamTable) initFlushDdBufferSize() {
-	p.FlushDdBufferSize = p.ParseInt32("datanode.flush.ddBufSize")
-}
-
 func (p *ParamTable) initInsertBinlogRootPath() {
 	// GOOSE TODO: rootPath change to  TenentID
 	rootPath, err := p.Load("etcd.rootPath")
@@ -170,13 +126,12 @@ func (p *ParamTable) initInsertBinlogRootPath() {
 	p.InsertBinlogRootPath = path.Join(rootPath, "insert_log")
 }
 
-func (p *ParamTable) initDdlBinlogRootPath() {
-	// GOOSE TODO: rootPath change to  TenentID
+func (p *ParamTable) initStatsBinlogRootPath() {
 	rootPath, err := p.Load("etcd.rootPath")
 	if err != nil {
 		panic(err)
 	}
-	p.DdlBinlogRootPath = path.Join(rootPath, "data_definition_log")
+	p.StatsBinlogRootPath = path.Join(rootPath, "stats_log")
 }
 
 // ---- Pulsar ----
@@ -188,13 +143,21 @@ func (p *ParamTable) initPulsarAddress() {
 	p.PulsarAddress = url
 }
 
-// - insert channel -
-func (p *ParamTable) initInsertChannelNames() {
-	p.InsertChannelNames = make([]string, 0)
+func (p *ParamTable) initSegmentStatisticsChannelName() {
+
+	path, err := p.Load("msgChannel.chanNamePrefix.dataServiceStatistic")
+	if err != nil {
+		panic(err)
+	}
+	p.SegmentStatisticsChannelName = path
 }
 
-func (p *ParamTable) initDDChannelNames() {
-	p.DDChannelNames = make([]string, 0)
+func (p *ParamTable) initTimeTickChannelName() {
+	path, err := p.Load("msgChannel.chanNamePrefix.dataServiceTimeTick")
+	if err != nil {
+		panic(err)
+	}
+	p.TimeTickChannelName = path
 }
 
 // - msg channel subname -
@@ -207,12 +170,12 @@ func (p *ParamTable) initMsgChannelSubName() {
 }
 
 // --- ETCD ---
-func (p *ParamTable) initEtcdAddress() {
-	addr, err := p.Load("_EtcdAddress")
+func (p *ParamTable) initEtcdEndpoints() {
+	endpoints, err := p.Load("_EtcdEndpoints")
 	if err != nil {
 		panic(err)
 	}
-	p.EtcdAddress = addr
+	p.EtcdEndpoints = strings.Split(endpoints, ",")
 }
 
 func (p *ParamTable) initMetaRootPath() {
@@ -227,22 +190,7 @@ func (p *ParamTable) initMetaRootPath() {
 	p.MetaRootPath = path.Join(rootPath, subPath)
 }
 
-func (p *ParamTable) initSegFlushMetaSubPath() {
-	subPath, err := p.Load("etcd.segFlushMetaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.SegFlushMetaSubPath = subPath
-}
-
-func (p *ParamTable) initDDLFlushMetaSubPath() {
-	subPath, err := p.Load("etcd.ddlFlushMetaSubPath")
-	if err != nil {
-		panic(err)
-	}
-	p.DDLFlushMetaSubPath = subPath
-}
-
+// --- MinIO ---
 func (p *ParamTable) initMinioAddress() {
 	endpoint, err := p.Load("_MinioAddress")
 	if err != nil {
@@ -281,17 +229,6 @@ func (p *ParamTable) initMinioBucketName() {
 		panic(err)
 	}
 	p.MinioBucketName = bucketName
-}
-
-func (p *ParamTable) sliceIndex() int {
-	dataNodeID := p.NodeID
-	dataNodeIDList := p.dataNodeIDList
-	for i := 0; i < len(dataNodeIDList); i++ {
-		if dataNodeID == dataNodeIDList[i] {
-			return i
-		}
-	}
-	return -1
 }
 
 func (p *ParamTable) initLogCfg() {

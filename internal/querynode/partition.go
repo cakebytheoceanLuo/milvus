@@ -32,7 +32,6 @@ type Partition struct {
 	collectionID UniqueID
 	partitionID  UniqueID
 	segmentIDs   []UniqueID
-	enable       bool
 }
 
 func (p *Partition) ID() UniqueID {
@@ -46,7 +45,7 @@ func (p *Partition) addSegmentID(segmentID UniqueID) {
 func (p *Partition) removeSegmentID(segmentID UniqueID) {
 	tmpIDs := make([]UniqueID, 0)
 	for _, id := range p.segmentIDs {
-		if id == segmentID {
+		if id != segmentID {
 			tmpIDs = append(tmpIDs, id)
 		}
 	}
@@ -57,7 +56,6 @@ func newPartition(collectionID UniqueID, partitionID UniqueID) *Partition {
 	var newPartition = &Partition{
 		collectionID: collectionID,
 		partitionID:  partitionID,
-		enable:       false,
 	}
 
 	log.Debug("create partition", zap.Int64("partitionID", partitionID))
