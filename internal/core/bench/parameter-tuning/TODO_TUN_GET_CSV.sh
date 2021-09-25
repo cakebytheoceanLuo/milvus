@@ -7,3 +7,4 @@
 /home/jigao/Desktop/milvus/internal/core/cmake-build-release/bench/bench_parameter_tuning_ivfpq --benchmark_counters_tabular=true --benchmark_out=/home/jigao/Desktop/bench_parameter_tuning_ivfpq_0610.csv --benchmark_out_format=csv
 
 # TODO: a speedup for google benchmark
+/home/jigao/Desktop/milvus/internal/core/cmake-build-release/bench/bench_parameter_tuning_hnsw --benchmark_counters_tabular=true --benchmark_out=/home/jigao/Desktop/bench_parameter_tuning_hnsw_0618.csv --benchmark_out_format=csv

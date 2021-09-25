@@ -77,9 +77,12 @@ public:
         static bool needBuildIndex = true;
         if (para.IsInvalid()) {
             para.Set(state.range(0), state.range(1), state.range(2));
-            conf[knowhere::IndexParams::m] = para.Get_m();
+            conf[knowhere::IndexParams::M] = para.Get_m();
+            assert(conf[knowhere::IndexParams::M] == para.Get_m());
             conf[knowhere::IndexParams::efConstruction] = para.Get_efConstruction();
+            assert(conf[knowhere::IndexParams::efConstruction] == para.Get_efConstruction());
             conf[knowhere::IndexParams::ef] = para.Get_ef();
+            assert(conf[knowhere::IndexParams::ef] == para.Get_ef());
         }
 
         // Build Parameters: m, Get_efConstruction
@@ -89,8 +92,10 @@ public:
         state.counters["efConstruction"] = efConstruction;
         if (!para.CheckBuildPara(m, efConstruction)) {
             std::cout << "[Benchmark] HNSW_Fixture Benchmark Constructor only called once per fixture testcase hat uses it." << std::endl;
-            conf[knowhere::IndexParams::m] = para.Get_m();
+            conf[knowhere::IndexParams::M] = para.Get_m();
+            assert(conf[knowhere::IndexParams::M] == para.Get_m());
             conf[knowhere::IndexParams::efConstruction] = para.Get_efConstruction();
+            assert(conf[knowhere::IndexParams::efConstruction] == para.Get_efConstruction());
             needBuildIndex = true;
         }
 
@@ -98,6 +103,7 @@ public:
         auto ef = state.range(2);
         state.counters["ef"] = ef;
         conf[knowhere::IndexParams::ef] = para.Get_ef();
+        assert(conf[knowhere::IndexParams::ef] == para.Get_ef());
         para.SetSearchPara(ef);
 
         // Build Index if necessary
@@ -160,20 +166,20 @@ BENCHMARK_DEFINE_F(HNSW_Fixture_SIFT1M, HNSW_SIFT1M)(benchmark::State& state) {
 // ef \in [k, ..., 32768]
 static void
 CustomArguments(benchmark::internal::Benchmark* b) {
-//    for (int m = 4; m <= 64; m *= 2) {
-//        for (int efConstruction = 8; efConstruction <= 512; efConstruction *= 2) {
-//            for (int ef = 100 /*TODO: the TOPK*/; ef <= 32768; ef *= 2) {
-//                b->Args({m, efConstruction, ef});
-//            }
-//        }
-//    }
-    for (int m = 16; m <= 64; m *= 2) {
-        for (int efConstruction = 200; efConstruction <= 512; efConstruction *= 2) {
-//            for (int ef = 100 /*TODO: the TOPK*/; ef <= 32768; ef *= 2) {
-                b->Args({m, efConstruction, 200});
-//            }
+    for (int m = 4; m <= 64; ++m) {
+        for (int efConstruction = 8; efConstruction <= 512; efConstruction *= 2) {
+            for (int ef = 100 /*TODO: the TOPK*/; ef <= 32768; ef *= 2) {
+                b->Args({m, efConstruction, ef});
+            }
         }
     }
+//    for (int m = 16; m <= 64; m *= 2) {
+//        for (int efConstruction = 200; efConstruction <= 512; efConstruction *= 2) {
+////            for (int ef = 100 /*TODO: the TOPK*/; ef <= 32768; ef *= 2) {
+//                b->Args({m, efConstruction, 200});
+////            }
+//        }
+//    }
 }
 
 BENCHMARK_REGISTER_F(HNSW_Fixture_SIFT1M, HNSW_SIFT1M)->Unit(benchmark::kMillisecond)->Apply(CustomArguments);

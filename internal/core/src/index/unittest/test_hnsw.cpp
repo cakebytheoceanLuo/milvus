@@ -45,6 +45,20 @@ class HNSWTest : public DataGen, public TestWithParam<std::string> {
 
 INSTANTIATE_TEST_CASE_P(HNSWParameters, HNSWTest, Values("HNSW"));
 
+TEST_P(HNSWTest, HNSW_Pass) {
+//    Generate(64, 10000, 10);  // dim = 64, nb = 10000, nq = 10
+//    index_->Train(base_dataset, conf);
+//    Generate(64, 10000, 10);  // dim = 64, nb = 10000, nq = 10
+    index_->AddWithoutIds(base_dataset, conf);
+}
+
+TEST_P(HNSWTest, HNSW_NotPass) {
+    Generate(64, 10000, 10);  // dim = 64, nb = 10000, nq = 10
+    index_->Train(base_dataset, conf);
+    Generate(64, 10000 + 1, 10);  // dim = 64, nb = 10000, nq = 10
+    index_->AddWithoutIds(base_dataset, conf);
+}
+
 TEST_P(HNSWTest, HNSW_basic) {
     assert(!xb.empty());
 

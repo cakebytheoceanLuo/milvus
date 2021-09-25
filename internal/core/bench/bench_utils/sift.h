@@ -128,45 +128,45 @@ train(size_t& d, size_t& nt, milvus::knowhere::VecIndexPtr& index, milvus::knowh
     // Fix the conf. with dimension from file.
     conf[milvus::knowhere::meta::DIM] = d;
 
+    if (index->index_type() == milvus::knowhere::IndexEnum::INDEX_HNSW) {
+        // No Train for HNSW.
+        return {0, 0, 0};
+    }
     std::vector<double> vec;
     {
         auto time_n_train = [&](size_t n) {
             for (size_t i = 0; i < n; i++) {
                 Timer t;
-//                index->Train(xt_dataset, conf);
+                index->Train(xt_dataset, conf);
                 double duration = t.elapsed_time<double, std::chrono::milliseconds>();
                 std::cout << "[Benchmark] index->Train: " << duration << " ms (milliseconds) on " << nt << " vectors" << std::endl;
-//                index->AddWithoutIds(xt_dataset, conf);
                 vec.push_back(duration);
             }
         };
 
-index->Train(xt_dataset, conf);
-index->AddWithoutIds(xt_dataset, conf);
-
         time_n_train(1);
         assert(!vec.empty());
 
-//        if (vec.front() < 1000) {
-//            // If less than 1000ms (1s), iterate 100 times (together 100s).
-//            std::cout << "[Benchmark] index->Train less than 1000ms (1s), iterate 100 times (together 100s)." << std::endl;
-//            time_n_train(100);
-//        } else if (vec.front() < 5000) {
-//            // If less than 5000ms (5s), iterate 20 times (together 100s).
-//            std::cout << "[Benchmark] index->Train less than 5000ms (5s), iterate 20 times (together 100s)." << std::endl;
-//            time_n_train(20);
-//        } else if (vec.front() < 10000) {
-//            // If less than 10000ms (10s), iterate 10 times (together 100s).
-//            std::cout << "[Benchmark] index->Train less than 10000ms (10s), iterate 10 times (together 10s)." << std::endl;
-//            time_n_train(10);
-//        } else if (vec.front() < 10000) {
-//            // If less than 100000ms (100s), iterate 2 times.
-//            std::cout << "[Benchmark] index->Train less than 100000ms (100s), iterate 2 times." << std::endl;
-//            time_n_train(2);
-//        } else {
-//            // If more than 100000ms (100s), iterate NO times.
-//            std::cout << "[Benchmark] index->Train more than 100000ms (100s), iterate NO times." << std::endl;
-//        }
+        if (vec.front() < 1000) {
+            // If less than 1000ms (1s), iterate 100 times (together 100s).
+            std::cout << "[Benchmark] index->Train less than 1000ms (1s), iterate 100 times (together 100s)." << std::endl;
+            time_n_train(100);
+        } else if (vec.front() < 5000) {
+            // If less than 5000ms (5s), iterate 20 times (together 100s).
+            std::cout << "[Benchmark] index->Train less than 5000ms (5s), iterate 20 times (together 100s)." << std::endl;
+            time_n_train(20);
+        } else if (vec.front() < 10000) {
+            // If less than 10000ms (10s), iterate 10 times (together 100s).
+            std::cout << "[Benchmark] index->Train less than 10000ms (10s), iterate 10 times (together 10s)." << std::endl;
+            time_n_train(10);
+        } else if (vec.front() < 10000) {
+            // If less than 100000ms (100s), iterate 2 times.
+            std::cout << "[Benchmark] index->Train less than 100000ms (100s), iterate 2 times." << std::endl;
+            time_n_train(2);
+        } else {
+            // If more than 100000ms (100s), iterate NO times.
+            std::cout << "[Benchmark] index->Train more than 100000ms (100s), iterate NO times." << std::endl;
+        }
     }
     delete[] xb_data;
     return Cal_Min_Max_Avg(vec);
@@ -176,62 +176,51 @@ std::tuple<double, double, double>
 add_points(milvus::knowhere::IndexType index_type,
            size_t d, size_t& nb, milvus::knowhere::VecIndexPtr& index, milvus::knowhere::Config& conf, size_t nt) {
     size_t d2;
-float* xb = fvecs_read(sift_path + "sift_learn.fvecs", &d2, &nb);
-auto xb_dataset = milvus::knowhere::GenDataset(nt, d, static_cast<const void*>(xb));
-
-//    float* xb = fvecs_read(sift_path + "sift_base.fvecs", &d2, &nb);
+    float* xb = fvecs_read(sift_path + "sift_base.fvecs", &d2, &nb);
     assert(d == d2 || !"dataset does not have same dimension as train set");
-
-//    auto xb_dataset = milvus::knowhere::GenDataset(nb, d, static_cast<const void*>(xb));
+    auto xb_dataset = milvus::knowhere::GenDataset(nb, d, static_cast<const void*>(xb));
     double duration{0};
 
-    std::vector<double> vec;
-    Timer t;
-    index->AddWithoutIds(xb_dataset, conf);
-    if (is_in_nm_list(index_type)) {
-        milvus::knowhere::BinarySet bs = index->Serialize(conf);
-        int64_t dim = xb_dataset->Get<int64_t>(milvus::knowhere::meta::DIM);
-        int64_t rows = xb_dataset->Get<int64_t>(milvus::knowhere::meta::ROWS);
-        auto raw_data = xb_dataset->Get<const void*>(milvus::knowhere::meta::TENSOR);
-
-        milvus::knowhere::BinaryPtr bptr = std::make_shared<milvus::knowhere::Binary>();
-        bptr->data = std::shared_ptr<uint8_t[]>((uint8_t*)raw_data, [&](uint8_t*) {});  // avoid repeated deconstruction
-        bptr->size = dim * rows * sizeof(float);
-        bs.Append(RAW_DATA, bptr);
-        index->Load(bs);
+    if (index->index_type() == milvus::knowhere::IndexEnum::INDEX_HNSW) {
+        // Fake Train for HNSW.
+        index->Train(xb_dataset, conf);
     }
-    duration = t.elapsed_time<unsigned int, std::chrono::milliseconds>();
-    std::cout << "index->AddWithoutIds: " << duration << " ms (milliseconds) on " << nb << " vectors" << std::endl;
-    vec.push_back(duration);
-//    {
-//        auto time_1_add_points = [&]() {
-//            Timer t;
-//            index->AddWithoutIds(xb_dataset, conf);
-//            if (is_in_nm_list(index_type)) {
-//                milvus::knowhere::BinarySet bs = index->Serialize(conf);
-//                int64_t dim = xb_dataset->Get<int64_t>(milvus::knowhere::meta::DIM);
-//                int64_t rows = xb_dataset->Get<int64_t>(milvus::knowhere::meta::ROWS);
-//                auto raw_data = xb_dataset->Get<const void*>(milvus::knowhere::meta::TENSOR);
-//
-//                milvus::knowhere::BinaryPtr bptr = std::make_shared<milvus::knowhere::Binary>();
-//                bptr->data = std::shared_ptr<uint8_t[]>((uint8_t*)raw_data, [&](uint8_t*) {});  // avoid repeated deconstruction
-//                bptr->size = dim * rows * sizeof(float);
-//                bs.Append(RAW_DATA, bptr);
-//                index->Load(bs);
-//            }
-//            duration = t.elapsed_time<unsigned int, std::chrono::milliseconds>();
-//            std::cout << "index->AddWithoutIds: " << duration << " ms (milliseconds) on " << nb << " vectors" << std::endl;
-//            vec.push_back(duration);
-//        };
+
+    std::vector<double> vec;
+    {
+        auto time_1_add_points = [&]() {
+            Timer t;
+            index->AddWithoutIds(xb_dataset, conf);
+            if (is_in_nm_list(index_type)) {
+                milvus::knowhere::BinarySet bs = index->Serialize(conf);
+                int64_t dim = xb_dataset->Get<int64_t>(milvus::knowhere::meta::DIM);
+                int64_t rows = xb_dataset->Get<int64_t>(milvus::knowhere::meta::ROWS);
+                auto raw_data = xb_dataset->Get<const void*>(milvus::knowhere::meta::TENSOR);
+
+                milvus::knowhere::BinaryPtr bptr = std::make_shared<milvus::knowhere::Binary>();
+                bptr->data = std::shared_ptr<uint8_t[]>((uint8_t*)raw_data, [&](uint8_t*) {});  // avoid repeated deconstruction
+                bptr->size = dim * rows * sizeof(float);
+                bs.Append(RAW_DATA, bptr);
+                index->Load(bs);
+            }
+            duration = t.elapsed_time<unsigned int, std::chrono::milliseconds>();
+            std::cout << "index->AddWithoutIds: " << duration << " ms (milliseconds) on " << nb << " vectors" << std::endl;
+            vec.push_back(duration);
+        };
 
         auto time_n_add_points = [&](size_t n) {
             for (size_t i = 0; i < n; i++) {
                 // Need to re-train a index.
                 milvus::knowhere::VecIndexPtr index_ = milvus::knowhere::VecIndexFactory::GetInstance().CreateVecIndex(index_type);
-                float* xb_data = fvecs_read(sift_path + "sift_learn.fvecs", &d, &nt);
-                auto xt_dataset = milvus::knowhere::GenDataset(nt, d, static_cast<const void*>(xb_data));
-                index_->Train(xt_dataset, conf);
-                delete[] xb_data;
+                if (index_->index_type() == milvus::knowhere::IndexEnum::INDEX_HNSW) {
+                    // Fake Train for HNSW.
+                    index_->Train(xb_dataset, conf);
+                } else {
+                    float* xb_data = fvecs_read(sift_path + "sift_learn.fvecs", &d, &nt);
+                    auto xt_dataset = milvus::knowhere::GenDataset(nt, d, static_cast<const void*>(xb_data));
+                    index_->Train(xt_dataset, conf);
+                    delete[] xb_data;
+                }
 
                 Timer t;
                 index_->AddWithoutIds(xb_dataset, conf);
@@ -253,31 +242,30 @@ auto xb_dataset = milvus::knowhere::GenDataset(nt, d, static_cast<const void*>(x
             }
         };
 
-//        time_1_add_points();
-        assert(!vec.empty());
+        time_1_add_points();
         assert(!vec.empty());
 
-//        if (vec.front() < 1000) {
-//            // If less than 1000ms (1s), iterate 100 times (together 100s).
-//            std::cout << "[Benchmark] index->AddWithoutIds less than 1000ms (1s), iterate 100 times (together 100s)." << std::endl;
-//            time_n_add_points(100);
-//        } else if (vec.front() < 5000) {
-//            // If less than 5000ms (5s), iterate 20 times (together 100s).
-//            std::cout << "[Benchmark] index->AddWithoutIds less than 5000ms (5s), iterate 20 times (together 100s)." << std::endl;
-//            time_n_add_points(20);
-//        } else if (vec.front() < 10000) {
-//            // If less than 10000ms (10s), iterate 10 times (together 100s).
-//            std::cout << "[Benchmark] index->AddWithoutIds less than 10000ms (10s), iterate 10 times (together 10s)." << std::endl;
-//            time_n_add_points(10);
-//        } else if (vec.front() < 100000) {
-//            // If less than 100000ms (100s), iterate 2 times.
-//            std::cout << "[Benchmark] index->AddWithoutIds more than 10000ms (10s), iterate 2 times." << std::endl;
-//            time_n_add_points(2);
-//        } else {
-//            // If more than 100000ms (100s), iterate NO times.
-//            std::cout << "[Benchmark] index->AddWithoutIds more than 100000ms (100s), iterate NO times." << std::endl;
-//        }
-//    }
+        if (vec.front() < 1000) {
+            // If less than 1000ms (1s), iterate 100 times (together 100s).
+            std::cout << "[Benchmark] index->AddWithoutIds less than 1000ms (1s), iterate 100 times (together 100s)." << std::endl;
+            time_n_add_points(100);
+        } else if (vec.front() < 5000) {
+            // If less than 5000ms (5s), iterate 20 times (together 100s).
+            std::cout << "[Benchmark] index->AddWithoutIds less than 5000ms (5s), iterate 20 times (together 100s)." << std::endl;
+            time_n_add_points(20);
+        } else if (vec.front() < 10000) {
+            // If less than 10000ms (10s), iterate 10 times (together 100s).
+            std::cout << "[Benchmark] index->AddWithoutIds less than 10000ms (10s), iterate 10 times (together 10s)." << std::endl;
+            time_n_add_points(10);
+        } else if (vec.front() < 100000) {
+            // If less than 100000ms (100s), iterate 2 times.
+            std::cout << "[Benchmark] index->AddWithoutIds more than 10000ms (10s), iterate 2 times." << std::endl;
+            time_n_add_points(2);
+        } else {
+            // If more than 100000ms (100s), iterate NO times.
+            std::cout << "[Benchmark] index->AddWithoutIds more than 100000ms (100s), iterate NO times." << std::endl;
+        }
+    }
     delete[] xb;
     return Cal_Min_Max_Avg(vec);
 }
